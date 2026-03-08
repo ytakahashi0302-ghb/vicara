@@ -1,0 +1,30 @@
+# Epic 2: マイクロスクラム・エンジン
+
+- [x] ESLint等の本格導入と開発環境の整備
+  - [x] パッケージのインストール
+  - [x] eslint.config.js の作成
+  - [x] package.json スクリプト修正
+  - [x] 既存ファイルのリントエラー修正
+- [x] 8時間スプリントタイマーの実装
+  - [x] useSprintTimer カスタムフック作成 (Store永続化と時間計算ロジック)
+  - [x] SprintTimer UIコンポーネント実装
+  - [x] プログレスバー・カウントダウン表示
+  - [x] App.tsx のヘッダーへの統合
+- [x] 1時間ごとのデイリースクラム通知
+  - [x] 時間境界の判定ロジック組み込み
+  - [x] トースト/ポップアップUIの表示確認
+- [x] スプリント時間の可変化 (Settings)
+  - [x] SettingsModal に「Sprint Duration」の入力UI追加
+  - [x] デフォルト値を1時間に設定し、設定のSave/Load対応
+- [x] タイマーの動的化
+  - [x] SprintState に `durationMs` を追加（進行中のスプリントの総時間を固定化）
+  - [x] useSprintTimer の初期化や計算ロジックを動的対応へ修正
+  - [x] SprintTimer UI のアフォーダンス（黄色や赤になるタイミング）を割合ベースに変更
+- [x] 通知タイミングのスマート化
+  - [x] SprintState から notifiedHours を削除し `hasNotifiedHalfway` へ変更
+  - [x] 50%経過時の「折り返し地点」通知ロジック組み込みとトーストUI修正
+- [x] 【Bug Fix】NOT_STARTED時の初期表示と設定変更の即時反映
+  - [x] SettingsModal: Save完了時に `settings-updated` イベントを発火
+  - [x] useSprintTimer: `getLatestDurationMs` ヘルパー関数の追加
+  - [x] useSprintTimer: `settings-updated` 受信時、`NOT_STARTED` なら状態とStoreを更新
+  - [x] useSprintTimer: 初期化時および `resetSprint` 時に最新設定を読み込んで反映

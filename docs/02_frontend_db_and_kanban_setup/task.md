@@ -1,0 +1,24 @@
+# タスクリスト: フロントエンドDB操作レイヤーおよびカンバンUIの構築
+
+- [x] Tailwind CSSと基本ライブラリのセットアップ
+  - [x] `tailwindcss`, `postcss`, `autoprefixer` パッケージのインストールと設定ファイルの更新
+  - [x] `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities`, `lucide-react` パッケージのインストール
+- [x] 型定義の作成
+  - [x] `src/types/index.ts` にDBスキーマ互換のStoryとTaskのインターフェースを追加
+- [x] DB操作レイヤー（カスタムフック）の実装
+  - [x] `src/hooks/useDatabase.ts` の作成
+  - [x] `src/hooks/useStories.ts` の作成（CRUD処理・プレースホルダー利用）
+  - [x] `src/hooks/useTasks.ts` の作成（CRUD処理・プレースホルダー利用）
+- [x] 状態管理コンテキストの実装
+  - [x] `src/context/ScrumContext.tsx` の作成
+- [x] 共有UIコンポーネントの作成
+  - [x] `src/components/ui/Button.tsx`
+  - [x] `src/components/ui/Card.tsx`
+- [x] カンバンUIの実装
+  - [x] `src/components/kanban/TaskCard.tsx` （ドラッグ可能なカード）
+  - [x] `src/components/kanban/StoryColumn.tsx` （ドロップ領域）
+  - [x] `src/components/kanban/Board.tsx` （全体レイアウトとDnDの制御）
+- [x] アプリケーションの統合
+  - [x] `src/App.tsx` を修正し、`ScrumContext` と `Board` コンポーネントを連携
+- [x] 手動テストと動作検証
+  - [x] `npm run tauri dev` での起動・データ永続化（CRUD）のテスト

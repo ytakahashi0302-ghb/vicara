@@ -1,0 +1,23 @@
+# 第8フェーズ: Sprint Archive & History View 実装タスク
+
+- [ ] DBマイグレーションファイルの作成 (`src-tauri/migrations/2_add_sprints.sql`)
+    - `sprints` テーブルの作成
+    - `tasks` テーブルへ `sprint_id` カラムの追加
+- [ ] 型定義の更新 (`src/types/index.ts`)
+    - `Sprint` インターフェースの追加
+    - `Task` インターフェースに `sprint_id?: string | null` を追加
+- [ ] アーカイブ非表示ロジックの実装
+    - `useTasks.ts` の `fetchTasks` で `sprint_id IS NULL` の絞り込み追加
+    - `useTasks.ts` の `fetchTasksByStoryId` でも同様の絞り込み追加
+- [ ] スプリントアーカイブ機能の実装
+    - `useSprintArchive.ts` フックの作成 (または既存への追加)
+    - `sprints` テーブルへのINSERT処理の実装
+    - `tasks` テーブルの完了済みタスクに対する一括UPDATE処理の追加
+    - `SprintTimer` コンポーネントの「Complete」時にアーカイブ機能が実行されるよう連携
+- [ ] 履歴閲覧ビュー (History View) の実装
+    - `src/hooks/useSprintHistory.ts` フックの作成 (スプリントとタスクの履歴取得)
+    - `src/components/HistoryModal.tsx` などのUIコンポーネント作成
+    - グローバルヘッダー等からのHistoryビューへの導線（ボタン）追加
+- [ ] 総合動作確認・テスト
+    - 機能実装後のE2E的な通しテスト（手動テスト）
+    - UI崩れ等デザインの微調整
