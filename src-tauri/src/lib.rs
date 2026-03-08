@@ -34,7 +34,8 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             greet,
-            ai::generate_tasks_from_story
+            ai::generate_tasks_from_story,
+            ai::refine_idea
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

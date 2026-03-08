@@ -11,16 +11,19 @@ import {
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { useScrum } from '../../context/ScrumContext';
 import { StorySwimlane } from './StorySwimlane';
-import { Plus, Settings } from 'lucide-react';
+import { Lightbulb, Plus, Settings } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { StoryFormModal, StoryFormData } from '../board/StoryFormModal';
 import { SettingsModal } from '../SettingsModal';
+import { IdeaRefinementDrawer } from '../ai/IdeaRefinementDrawer';
 import { v4 as uuidv4 } from 'uuid';
 
 export function Board() {
     const { stories, tasks, updateTaskStatus, addStory, loading } = useScrum();
     const [isAddStoryModalOpen, setIsAddStoryModalOpen] = useState(false);
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+    const [isIdeaRefinementModalOpen, setIsIdeaRefinementModalOpen] = useState(false);
+    const [storyFormInitialData, setStoryFormInitialData] = useState<Partial<StoryFormData> | undefined>();
 
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -115,16 +118,43 @@ export function Board() {
                     <p className="text-sm text-gray-500 max-w-sm mb-6">
                         ストーリーを作成して、スプリントボードでタスクを管理しましょう。
                     </p>
-                    <Button onClick={() => setIsAddStoryModalOpen(true)}>
-                        <Plus size={20} className="mr-2" />
-                        ストーリーを追加
-                    </Button>
+                    <div className="flex gap-4">
+                        <Button
+                            variant="secondary"
+                            onClick={() => setIsIdeaRefinementModalOpen(true)}
+                            className="bg-yellow-50 hover:bg-yellow-100 text-yellow-800 border-yellow-200"
+                        >
+                            <Lightbulb size={20} className="mr-2" />
+                            アイデアから作成
+                        </Button>
+                        <Button onClick={() => {
+                            setStoryFormInitialData(undefined);
+                            setIsAddStoryModalOpen(true);
+                        }}>
+                            <Plus size={20} className="mr-2" />
+                            ストーリーを追加
+                        </Button>
+                    </div>
 
                     <StoryFormModal
                         isOpen={isAddStoryModalOpen}
-                        onClose={() => setIsAddStoryModalOpen(false)}
+                        initialData={storyFormInitialData}
+                        onClose={() => {
+                            setIsAddStoryModalOpen(false);
+                            setStoryFormInitialData(undefined);
+                        }}
                         onSave={handleAddStory}
                         title="ストーリーを追加"
+                    />
+
+                    <IdeaRefinementDrawer
+                        isOpen={isIdeaRefinementModalOpen}
+                        onClose={() => setIsIdeaRefinementModalOpen(false)}
+                        onComplete={(data) => {
+                            setStoryFormInitialData(data);
+                            setIsIdeaRefinementModalOpen(false);
+                            setIsAddStoryModalOpen(true);
+                        }}
                     />
 
                     <SettingsModal
@@ -145,7 +175,18 @@ export function Board() {
                         <Settings size={20} className="mr-2" />
                         設定
                     </Button>
-                    <Button onClick={() => setIsAddStoryModalOpen(true)}>
+                    <Button
+                        variant="secondary"
+                        onClick={() => setIsIdeaRefinementModalOpen(true)}
+                        className="bg-yellow-50 hover:bg-yellow-100 text-yellow-800 border-yellow-200"
+                    >
+                        <Lightbulb size={20} className="mr-2" />
+                        アイデアから作成
+                    </Button>
+                    <Button onClick={() => {
+                        setStoryFormInitialData(undefined);
+                        setIsAddStoryModalOpen(true);
+                    }}>
                         <Plus size={20} className="mr-2" />
                         ストーリーを追加
                     </Button>
@@ -170,9 +211,23 @@ export function Board() {
 
             <StoryFormModal
                 isOpen={isAddStoryModalOpen}
-                onClose={() => setIsAddStoryModalOpen(false)}
+                initialData={storyFormInitialData}
+                onClose={() => {
+                    setIsAddStoryModalOpen(false);
+                    setStoryFormInitialData(undefined);
+                }}
                 onSave={handleAddStory}
                 title="ストーリーを追加"
+            />
+
+            <IdeaRefinementDrawer
+                isOpen={isIdeaRefinementModalOpen}
+                onClose={() => setIsIdeaRefinementModalOpen(false)}
+                onComplete={(data) => {
+                    setStoryFormInitialData(data);
+                    setIsIdeaRefinementModalOpen(false);
+                    setIsAddStoryModalOpen(true);
+                }}
             />
 
             <SettingsModal
