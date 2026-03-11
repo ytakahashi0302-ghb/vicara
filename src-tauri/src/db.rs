@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
 use serde_json::Value as JsonValue;
@@ -17,6 +17,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub local_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -29,6 +30,7 @@ pub struct Story {
     pub acceptance_criteria: Option<String>,
     pub status: String,
     pub sprint_id: Option<String>,
+    pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -42,6 +44,7 @@ pub struct Task {
     pub description: Option<String>,
     pub status: String,
     pub sprint_id: Option<String>,
+    pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -162,13 +165,51 @@ pub async fn delete_project(app: AppHandle, id: String) -> Result<QueryResult, S
     execute_query(&app, query, values).await
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectPathUpdateResult {
+    pub success: bool,
+    pub has_product_context: bool,
+    pub has_architecture: bool,
+    pub has_rule: bool,
+}
+
+#[tauri::command]
+pub async fn update_project_path(app: AppHandle, id: String, local_path: Option<String>) -> Result<ProjectPathUpdateResult, String> {
+    let query = "UPDATE projects SET local_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    let values = vec![
+        serde_json::to_value(&local_path).unwrap(),
+        serde_json::to_value(&id).unwrap(),
+    ];
+    execute_query(&app, query, values).await?;
+
+    let mut has_product_context = false;
+    let mut has_architecture = false;
+    let mut has_rule = false;
+
+    if let Some(path) = local_path {
+        let p = std::path::Path::new(&path);
+        if p.exists() && p.is_dir() {
+            has_product_context = p.join("PRODUCT_CONTEXT.md").exists();
+            has_architecture = p.join("ARCHITECTURE.md").exists();
+            has_rule = p.join("Rule.md").exists();
+        }
+    }
+
+    Ok(ProjectPathUpdateResult {
+        success: true,
+        has_product_context,
+        has_architecture,
+        has_rule,
+    })
+}
+
 // ------------------------------------------------------------------------------------------------
 // Stories CRUD
 // ------------------------------------------------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_stories(app: AppHandle, project_id: String) -> Result<Vec<Story>, String> {
-    let query = "SELECT * FROM stories WHERE sprint_id IS NULL AND project_id = ? ORDER BY created_at DESC";
+    let query = "SELECT * FROM stories WHERE archived = 0 AND project_id = ? ORDER BY created_at DESC";
     let values = vec![serde_json::to_value(project_id).unwrap()];
     let stories = select_query::<Story>(&app, query, values).await?;
     println!("Fetched stories: {:?}", stories);
@@ -177,7 +218,7 @@ pub async fn get_stories(app: AppHandle, project_id: String) -> Result<Vec<Story
 
 #[tauri::command]
 pub async fn get_archived_stories(app: AppHandle, project_id: String) -> Result<Vec<Story>, String> {
-    let query = "SELECT * FROM stories WHERE sprint_id IS NOT NULL AND project_id = ?";
+    let query = "SELECT * FROM stories WHERE archived = 1 AND project_id = ?";
     let values = vec![serde_json::to_value(project_id).unwrap()];
     select_query::<Story>(&app, query, values).await
 }
@@ -222,7 +263,7 @@ pub async fn delete_story(app: AppHandle, id: String) -> Result<QueryResult, Str
 
 #[tauri::command]
 pub async fn get_tasks(app: AppHandle, project_id: String) -> Result<Vec<Task>, String> {
-    let query = "SELECT * FROM tasks WHERE sprint_id IS NULL AND project_id = ? ORDER BY created_at ASC";
+    let query = "SELECT * FROM tasks WHERE archived = 0 AND project_id = ? ORDER BY created_at ASC";
     let values = vec![serde_json::to_value(project_id).unwrap()];
     let tasks = select_query::<Task>(&app, query, values).await?;
     println!("Fetched tasks: {:?}", tasks);
@@ -231,14 +272,14 @@ pub async fn get_tasks(app: AppHandle, project_id: String) -> Result<Vec<Task>, 
 
 #[tauri::command]
 pub async fn get_archived_tasks(app: AppHandle, project_id: String) -> Result<Vec<Task>, String> {
-    let query = "SELECT * FROM tasks WHERE sprint_id IS NOT NULL AND project_id = ?";
+    let query = "SELECT * FROM tasks WHERE archived = 1 AND project_id = ?";
     let values = vec![serde_json::to_value(project_id).unwrap()];
     select_query::<Task>(&app, query, values).await
 }
 
 #[tauri::command]
 pub async fn get_tasks_by_story_id(app: AppHandle, story_id: String, project_id: String) -> Result<Vec<Task>, String> {
-    let query = "SELECT * FROM tasks WHERE story_id = ? AND sprint_id IS NULL AND project_id = ? ORDER BY created_at ASC";
+    let query = "SELECT * FROM tasks WHERE story_id = ? AND archived = 0 AND project_id = ? ORDER BY created_at ASC";
     let values = vec![
         serde_json::to_value(story_id).unwrap(),
         serde_json::to_value(project_id).unwrap(),
@@ -315,45 +356,106 @@ pub async fn add_sprint(app: AppHandle, id: String, project_id: String, started_
 
 #[tauri::command]
 pub async fn archive_sprint(app: AppHandle, project_id: String, started_at: i64, completed_at: i64, duration_ms: i64) -> Result<bool, String> {
-    // 1. Generate new sprint ID
+    let instances = app.state::<DbInstances>();
+    let db_instances = instances.0.read().await;
+    let wrapper = db_instances.get(DB_STRING).ok_or("Database instance not found")?;
+    
+    #[allow(unreachable_patterns)]
+    let pool = match wrapper {
+        DbPool::Sqlite(p) => p,
+        _ => return Err("Not an sqlite database".to_string()),
+    };
+
     let sprint_id = uuid::Uuid::new_v4().to_string();
+    
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
-    // 2. Insert into sprints
+    // 1. Insert into sprints
     let query_sprint = "INSERT INTO sprints (id, project_id, started_at, completed_at, duration_ms) VALUES (?, ?, ?, ?, ?)";
-    let values_sprint = vec![
-        serde_json::to_value(&sprint_id).unwrap(),
-        serde_json::to_value(&project_id).unwrap(),
-        serde_json::to_value(started_at).unwrap(),
-        serde_json::to_value(completed_at).unwrap(),
-        serde_json::to_value(duration_ms).unwrap(),
-    ];
-    execute_query(&app, query_sprint, values_sprint).await?;
+    let _ = sqlx::query(query_sprint)
+        .bind(&sprint_id).bind(&project_id).bind(started_at).bind(completed_at).bind(duration_ms)
+        .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
-    // 3. Update tasks with status 'Done'
-    let query_tasks = "UPDATE tasks SET sprint_id = ?, updated_at = CURRENT_TIMESTAMP WHERE status = 'Done' AND sprint_id IS NULL AND project_id = ?";
-    let values_tasks = vec![
-        serde_json::to_value(&sprint_id).unwrap(),
-        serde_json::to_value(&project_id).unwrap(),
-    ];
-    execute_query(&app, query_tasks, values_tasks).await?;
+    // 2. Update tasks with status 'Done'
+    let query_tasks = "UPDATE tasks SET sprint_id = ?, archived = 1, updated_at = CURRENT_TIMESTAMP WHERE status = 'Done' AND archived = 0 AND project_id = ?";
+    let _ = sqlx::query(query_tasks)
+        .bind(&sprint_id).bind(&project_id)
+        .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
-    // 4. Update stories where all child tasks are archived
+    // 3. Update stories where all child tasks are archived AND story has at least one task
     let query_stories = r#"
         UPDATE stories 
-        SET sprint_id = ?, updated_at = CURRENT_TIMESTAMP 
-        WHERE sprint_id IS NULL AND project_id = ?
+        SET sprint_id = ?, archived = 1, updated_at = CURRENT_TIMESTAMP 
+        WHERE archived = 0 AND project_id = ?
+        AND EXISTS (
+            SELECT 1 FROM tasks 
+            WHERE tasks.story_id = stories.id
+        )
         AND NOT EXISTS (
             SELECT 1 FROM tasks 
             WHERE tasks.story_id = stories.id 
-            AND tasks.sprint_id IS NULL
+            AND tasks.archived = 0
         )
     "#;
-    let values_stories = vec![
-        serde_json::to_value(&sprint_id).unwrap(),
-        serde_json::to_value(&project_id).unwrap(),
-    ];
-    execute_query(&app, query_stories, values_stories).await?;
+    let _ = sqlx::query(query_stories)
+        .bind(&sprint_id).bind(&project_id)
+        .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(true)
+}
+
+pub async fn build_project_context(app: &AppHandle, project_id: &str) -> Result<String, String> {
+    let query_project = "SELECT * FROM projects WHERE id = ?";
+    let projects = select_query::<Project>(app, query_project, vec![serde_json::to_value(project_id).unwrap()]).await?;
+    let local_path = projects.first().and_then(|p| p.local_path.clone());
+
+    let mut md = String::new();
+
+    if let Some(path) = local_path {
+        let p = std::path::Path::new(&path);
+        if p.exists() && p.is_dir() {
+            md.push_str("\n【プロジェクト既存ドキュメントコンテキスト】\n");
+            let files = ["PRODUCT_CONTEXT.md", "ARCHITECTURE.md", "Rule.md"];
+            for f in files {
+                let fp = p.join(f);
+                if fp.exists() {
+                    let content = std::fs::read_to_string(&fp).unwrap_or_default();
+                    md.push_str(&format!("--- {} ---\n{}\n", f, content));
+                }
+            }
+        }
+    }
+
+    let query_stories = "SELECT * FROM stories WHERE archived = 0 AND project_id = ? ORDER BY created_at ASC";
+    let stories = select_query::<Story>(app, query_stories, vec![serde_json::to_value(project_id).unwrap()]).await?;
+    
+    let query_tasks = "SELECT * FROM tasks WHERE archived = 0 AND project_id = ? ORDER BY created_at ASC";
+    let tasks = select_query::<Task>(app, query_tasks, vec![serde_json::to_value(project_id).unwrap()]).await?;
+    
+    if stories.is_empty() && tasks.is_empty() && md.is_empty() {
+        return Ok(String::new());
+    }
+    
+    if !stories.is_empty() || !tasks.is_empty() {
+        md.push_str("\n【現在のプロジェクトコンテキスト（既存のストーリーとタスク）】\n");
+    }
+    for story in stories {
+        let desc = story.description.unwrap_or_default().replace('\n', " ");
+        let short_desc = if desc.chars().count() > 50 {
+            format!("{}...", desc.chars().take(50).collect::<String>())
+        } else {
+            desc
+        };
+        let desc_str = if short_desc.is_empty() { String::new() } else { format!(": {}", short_desc) };
+        md.push_str(&format!("- Story: {}{} (Status: {})\n", story.title, desc_str, story.status));
+        
+        for task in tasks.iter().filter(|t| t.story_id == story.id) {
+            md.push_str(&format!("  - Task: {} (Status: {})\n", task.title, task.status));
+        }
+    }
+    
+    Ok(md)
 }
 

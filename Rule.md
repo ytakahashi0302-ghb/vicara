@@ -45,3 +45,11 @@
 ## 7. 課題・技術的負債 (Tech Debt)
 - ~~**ESLintの本格導入**~~: **対応済み** (`eslint` + `eslint-plugin-react-hooks` + `typescript-eslint` 導入済み。`npm run lint` で実行可能)
 - **タイマー稼働中の新規プロジェクト作成によるガード漏れ**: スプリントタイマーが稼働している状態（RUNNING）で、ヘッダーのドロップダウンから「新規ワークスペース作成」を選択して新しいプロジェクトを作成した場合、Interaction Guard（確認ダイアログ）が発動せずに状態が新プロジェクトに引き継がれてしまうバグが存在する。レアケースであるため現状は許容（Tech Debt）とし、次回以降の開発で修正を検討する。
+- **AIタスク生成時のJSONパース正規表現の脆弱性**: 現在 `generate_tasks_from_story` 内のJSON抽出処理が最短マッチの正規表現 (`(?s)\[.*?\]`) で行われており、ネストされた配列などでパースが失敗する可能性がある。将来的にGeminiのように Structured Output (`application/json`) を Anthropic 側でも利用できるようにする。
+- **WorkspaceContext の初期プロジェクトIDハードコード**: `currentProjectId` の初期値が `'default'` と固定されているため、これが削除された場合のフォールバック（最初の有効なプロジェクトを選択する等）が未実装である。
+- **AIモデルバージョンのハードコード**: Rust側 (`ai.rs`) において、Anthropic のモデル名 (`claude-3-5-sonnet-20241022`) 等が決め打ちになっている。次回以降、設定画面（Settings）から利用モデルを選択できるような仕組みを導入する。
+- **CRUD操作時の全件再フェッチ**: ストーリー等の追加・更新時に現状は `fetchStories()` 等でリストを全件再取得している。データ量増加時に遅延やチラつきの原因となるため、カンバン等で導入済みの楽観的UI (Optimistic UI) への段階的移行を検討する。
+- **未使用コード・デバッグログの残留**: Tauriテンプレート由来の `greet` コマンドや、`db.rs` 内の `println!` が残っている。リリース前にクリーンアップする。
+- **TauriコマンドのContext未公開**: `update_project` や `delete_project` が WorkspaceContext 経由で呼び出せるようになっていないため、呼び出し経路が統一されていない。
+- **プロジェクト削除機能のUI欠如**: バックエンドに `delete_project` コマンドがあるが、フロントエンドからそれを呼び出してプロジェクトを削除するUI機能が未実装である。
+- **AI呼び出しコスト(予算・トークン)の未計測**: `FUTURE_CONCEPT.md` で言及されているコスト管理を実現するために、AI呼び出しごとの usage(input/output tokens) 記録機能を今後追加する。

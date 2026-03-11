@@ -2,6 +2,7 @@ export interface Project {
     id: string;
     name: string;
     description: string | null;
+    local_path: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -22,6 +23,7 @@ export interface Story {
     status: 'Backlog' | 'Ready' | 'In Progress' | 'Done';
     sprint_id?: string | null;
     project_id: string;
+    archived: boolean;
     created_at: string;
     updated_at: string;
 }
@@ -34,6 +36,7 @@ export interface Task {
     status: 'To Do' | 'In Progress' | 'Done';
     sprint_id?: string | null;
     project_id: string;
+    archived: boolean;
     created_at: string;
     updated_at: string;
 }

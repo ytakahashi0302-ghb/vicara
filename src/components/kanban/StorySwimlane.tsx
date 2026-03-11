@@ -9,6 +9,7 @@ import { StoryFormModal, StoryFormData } from '../board/StoryFormModal';
 import { useScrum } from '../../context/ScrumContext';
 import { v4 as uuidv4 } from 'uuid';
 import { invoke } from '@tauri-apps/api/core';
+import { useWorkspace } from '../../context/WorkspaceContext';
 
 interface StorySwimlaneProps {
     story: Story;
@@ -18,6 +19,7 @@ interface StorySwimlaneProps {
 const STATUSES: Task['status'][] = ['To Do', 'In Progress', 'Done'];
 
 export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: StorySwimlaneProps) {
+    const { currentProjectId } = useWorkspace();
     const [isAddTaskModalOpen, setIsAddTaskModalOpen] = useState(false);
     const [isEditStoryModalOpen, setIsEditStoryModalOpen] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -37,7 +39,8 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
             story_id: story.id,
             title: data.title,
             description: data.description,
-            status: statusMap[data.status]
+            status: statusMap[data.status],
+            archived: false
         });
     }, [addTask, story.id]);
 
@@ -71,7 +74,8 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
                 title: story.title,
                 description: story.description || '',
                 acceptanceCriteria: story.acceptance_criteria || '',
-                provider: provider
+                provider: provider,
+                projectId: currentProjectId
             });
 
             for (const t of generatedTasks) {
@@ -80,7 +84,8 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
                     story_id: story.id,
                     title: t.title,
                     description: t.description,
-                    status: 'To Do'
+                    status: 'To Do',
+                    archived: false
                 });
             }
         } catch (err: unknown) {

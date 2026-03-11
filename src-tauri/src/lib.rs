@@ -1,5 +1,6 @@
 mod ai;
 mod db;
+mod inception;
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -28,10 +29,23 @@ pub fn run() {
             description: "add_projects",
             sql: include_str!("../migrations/3_add_projects.sql"),
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 4,
+            description: "add_archived_column",
+            sql: include_str!("../migrations/4_add_archived_column.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 5,
+            description: "add_local_path",
+            sql: include_str!("../migrations/5_add_local_path.sql"),
+            kind: MigrationKind::Up,
         }
     ];
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
@@ -39,6 +53,15 @@ pub fn run() {
                 .add_migrations("sqlite:ai-scrum.db", migrations)
                 .build(),
         )
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Wait slightly to ensure DB is initialized
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let _ = db::execute_query(&app_handle, "PRAGMA foreign_keys = ON;", vec![]).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             ai::generate_tasks_from_story,
@@ -46,6 +69,7 @@ pub fn run() {
             db::get_projects,
             db::create_project,
             db::update_project,
+            db::update_project_path,
             db::delete_project,
             db::get_stories,
             db::get_archived_stories,
@@ -61,7 +85,11 @@ pub fn run() {
             db::delete_task,
             db::get_sprints,
             db::add_sprint,
-            db::archive_sprint
+            db::archive_sprint,
+            inception::generate_base_rule,
+            inception::read_inception_file,
+            inception::write_inception_file,
+            ai::chat_inception
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

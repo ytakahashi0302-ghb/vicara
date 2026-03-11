@@ -7,6 +7,7 @@ import toast from 'react-hot-toast';
 import { StoryFormData } from '../board/StoryFormModal';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useWorkspace } from '../../context/WorkspaceContext';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -31,6 +32,7 @@ interface IdeaRefinementDrawerProps {
 }
 
 export const IdeaRefinementDrawer: React.FC<IdeaRefinementDrawerProps> = ({ isOpen, onClose, onComplete }) => {
+    const { currentProjectId } = useWorkspace();
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [draft, setDraft] = useState<StoryDraft | null>(null);
@@ -67,7 +69,8 @@ export const IdeaRefinementDrawer: React.FC<IdeaRefinementDrawerProps> = ({ isOp
 
             const response = await invoke<RefinedIdeaResponse>('refine_idea', {
                 ideaSeed: newUserMessage.content,
-                previousContext: previousContext
+                previousContext: previousContext,
+                projectId: currentProjectId
             });
 
             setMessages(prev => [...prev, { role: 'assistant', content: response.reply }]);

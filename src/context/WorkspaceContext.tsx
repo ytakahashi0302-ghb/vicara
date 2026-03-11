@@ -9,6 +9,7 @@ interface WorkspaceContextType {
     setCurrentProjectId: (id: string) => void;
     fetchProjects: () => Promise<void>;
     addProject: (id: string, name: string, description: string | null) => Promise<void>;
+    updateProjectPath: (id: string, localPath: string | null) => Promise<{ success: boolean; has_product_context: boolean; has_architecture: boolean; has_rule: boolean }>;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
@@ -53,12 +54,28 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setCurrentProjectIdState(id);
     }, []);
 
+    const updateProjectPath = useCallback(async (id: string, localPath: string | null) => {
+        try {
+            const result = await invoke<{ success: boolean; has_product_context: boolean; has_architecture: boolean; has_rule: boolean }>('update_project_path', {
+                id,
+                localPath
+            });
+            await fetchProjects();
+            return result;
+        } catch (err) {
+            console.error('Failed to update project path', err);
+            toast.error(`パスの保存に失敗しました: ${err}`);
+            throw err;
+        }
+    }, [fetchProjects]);
+
     const value = {
         projects,
         currentProjectId,
         setCurrentProjectId,
         fetchProjects,
-        addProject
+        addProject,
+        updateProjectPath
     };
 
     return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;

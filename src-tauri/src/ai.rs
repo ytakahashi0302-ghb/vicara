@@ -29,17 +29,32 @@ pub struct RefinedIdeaResponse {
     pub story_draft: StoryDraft,
 }
 
-#[tauri::command]
-pub async fn generate_tasks_from_story<R: Runtime>(
-    app: AppHandle<R>,
-    title: String,
-    description: String,
-    acceptance_criteria: String,
-    provider: String,
-) -> Result<Vec<GeneratedTask>, String> {
-    // 1. StoreからAPIキーを取得
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatInceptionResponse {
+    pub reply: String,
+    pub is_finished: bool,
+    pub generated_document: Option<String>,
+}
+
+async fn get_api_key_and_provider(app: &AppHandle, provider_override: Option<String>) -> Result<(String, String), String> {
     let store = app.store("settings.json").map_err(|e| format!("Failed to access store: {}", e))?;
     
+    let provider = match provider_override {
+        Some(p) => p,
+        None => match store.get("default-ai-provider") {
+            Some(val) => {
+                if let Some(obj) = val.as_object() {
+                    obj.get("value").and_then(|v| v.as_str()).unwrap_or("anthropic").to_string()
+                } else if let Some(s) = val.as_str() {
+                    s.to_string()
+                } else {
+                    "anthropic".to_string()
+                }
+            },
+            None => "anthropic".to_string(),
+        }
+    };
+
     let key_name = if provider == "gemini" { "gemini-api-key" } else { "anthropic-api-key" };
     let api_key = match store.get(key_name) {
         Some(val) => {
@@ -62,6 +77,30 @@ pub async fn generate_tasks_from_story<R: Runtime>(
         return Err(format!("{} is empty. Please configure it in Settings.", key_name));
     }
 
+    Ok((api_key, provider))
+}
+
+#[tauri::command]
+pub async fn generate_tasks_from_story(
+    app: AppHandle,
+    title: String,
+    description: String,
+    acceptance_criteria: String,
+    provider: String,
+    project_id: String,
+) -> Result<Vec<GeneratedTask>, String> {
+    // 1. StoreからAPIキーを取得
+    let (api_key, provider_resolved) = get_api_key_and_provider(&app, Some(provider)).await?;
+
+    // プロジェクトのコンテキストを取得
+    let context_md = match crate::db::build_project_context(&app, &project_id).await {
+        Ok(md) => md,
+        Err(e) => {
+            println!("Failed to load project context: {}", e);
+            String::new()
+        }
+    };
+
     // 2. プロンプト生成 (JSONを要求)
     let prompt = format!(
         "以下のユーザーストーリーをもとに、要件を満たすための具体的な実装タスク(To Do)を3〜5個に分解してください。\n\
@@ -69,6 +108,7 @@ pub async fn generate_tasks_from_story<R: Runtime>(
         【ストーリータイトル】\n{}\n\
         【説明】\n{}\n\
         【受け入れ基準】\n{}\n\
+        {}\n\
         \n\
         出力は、以下の形式のJSON配列のみとしてください。前後の挨拶やマークダウンブロック(```json)は不要です。必ずパース可能なJSON配列を絶対に出力してください。\n\
         [\n\
@@ -77,11 +117,11 @@ pub async fn generate_tasks_from_story<R: Runtime>(
             \"description\": \"具体的なタスクの作業内容\"\n\
           }}\n\
         ]",
-        title, description, acceptance_criteria
+        title, description, acceptance_criteria, context_md
     );
 
     let client = Client::new();
-    let content = if provider == "gemini" {
+    let content = if provider_resolved == "gemini" {
         let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", api_key);
         let body = serde_json::json!({
             "systemInstruction": {
@@ -171,67 +211,41 @@ pub async fn generate_tasks_from_story<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn refine_idea<R: Runtime>(
-    app: AppHandle<R>,
+pub async fn refine_idea(
+    app: AppHandle,
     idea_seed: String,
     previous_context: Option<Vec<Message>>,
+    project_id: String,
 ) -> Result<RefinedIdeaResponse, String> {
     // 1. StoreからAPIキーとProviderを取得
-    let store = app.store("settings.json").map_err(|e| format!("Failed to access store: {}", e))?;
-    
-    // Default provider is anthropic if not set
-    let provider = match store.get("default-ai-provider") {
-        Some(val) => {
-            if let Some(obj) = val.as_object() {
-                obj.get("value").and_then(|v| v.as_str()).unwrap_or("anthropic").to_string()
-            } else if let Some(s) = val.as_str() {
-                s.to_string()
-            } else {
-                "anthropic".to_string()
-            }
-        },
-        None => "anthropic".to_string(),
-    };
+    let (api_key, provider) = get_api_key_and_provider(&app, None).await?;
 
-    let key_name = if provider == "gemini" { "gemini-api-key" } else { "anthropic-api-key" };
-    let api_key = match store.get(key_name) {
-        Some(val) => {
-            if let Some(obj) = val.as_object() {
-                if let Some(v) = obj.get("value").and_then(|v| v.as_str()) {
-                    v.to_string()
-                } else {
-                    return Err(format!("{} is not a valid string in value object", key_name));
-                }
-            } else if let Some(s) = val.as_str() {
-                s.to_string()
-            } else {
-                return Err(format!("{} has invalid format in store", key_name));
-            }
-        },
-        None => return Err(format!("{} is not set. Please configure it in Settings.", key_name)),
+    // プロジェクトのコンテキストを取得
+    let context_md = match crate::db::build_project_context(&app, &project_id).await {
+        Ok(md) => md,
+        Err(e) => {
+            println!("Failed to load project context: {}", e);
+            String::new()
+        }
     };
-
-    if api_key.trim().is_empty() {
-        return Err(format!("{} is empty. Please configure it in Settings.", key_name));
-    }
 
     // 2. システムプロンプト
-    let system_prompt = "あなたは優秀なPOアシスタントです。ユーザーの入力から、プロダクトの要件を整理し、ユーザーストーリーの草案(draft)を作成する壁打ち相手です。
+    let system_prompt = format!("あなたは優秀なPOアシスタントです。ユーザーの入力から、プロダクトの要件を整理し、ユーザーストーリーの草案(draft)を作成する壁打ち相手です。
 
 制約事項:
 1. ユーザーの入力に対して過度な共感や感嘆符（！）の多用は避け、親しみやすさを保ちつつも事務的でスムーズな進行を心がけてください。
 2. ユーザーの言葉を受け止めた上で、その背後にある「本当の課題」や「理想の体験」を深掘りする質問を1つだけ投げかけてください。「例えば〇〇のようなイメージですか？」と例を添えると良いです。
 3. ユーザーとの対話履歴を踏まえ、現在までに判明している要件から「ストーリーの草案 (story_draft)」を作成・更新してください。
 4. 出力は必ず以下のJSON形式のみとしてください。前後の挨拶やマークダウンブロック(```json)は一切不要です。絶対にパース可能なJSONを出力してください。
-
-{
+{}
+{{
   \"reply\": \"ユーザーへの返答メッセージ（150文字程度）\",
-  \"story_draft\": {
+  \"story_draft\": {{
     \"title\": \"ストーリーのタイトル\",
     \"description\": \"ストーリーの詳細な背景や説明\",
     \"acceptance_criteria\": \"- 受け入れ条件1\\n- 受け入れ条件2\"
-  }
-}";
+  }}
+}}", context_md);
 
     let client = Client::new();
     
@@ -365,6 +379,126 @@ pub async fn refine_idea<R: Runtime>(
 
     let response: RefinedIdeaResponse = serde_json::from_str(&cleaned_content)
         .map_err(|e| format!("Failed to parse JSON Object from AI output: {}\nExtracted String: {}", e, cleaned_content))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn chat_inception(
+    app: AppHandle,
+    project_id: String,
+    phase: u32,
+    messages_history: Vec<Message>,
+) -> Result<ChatInceptionResponse, String> {
+    let (api_key, provider) = get_api_key_and_provider(&app, None).await?;
+    let context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
+
+    let phase_instruction = match phase {
+        1 => "現在は Phase 1 (Why) です。プロダクトのコア価値とターゲットについて議論します。",
+        2 => "現在は Phase 2 (Not List) です。やらないことリストについて議論します。",
+        3 => "現在は Phase 3 (What) です。技術スタックやアーキテクチャの制約について議論します。",
+        4 => "現在は Phase 4 (How) です。プロジェクト固有の開発ルールやAIへの追加ルールについて議論します。",
+        _ => "現在は最終確認フェーズです",
+    };
+
+    let doc_target = match phase {
+        1 | 2 => "PRODUCT_CONTEXT.md",
+        3 => "ARCHITECTURE.md",
+        4 => "Rule.md",
+        _ => "",
+    };
+
+    let system_prompt = format!(
+"あなたはアジャイル開発プロジェクトの開始時における「インセプションデッキ」作成をサポートする優秀なAIアシスタントです。
+ユーザーと対話し、プロジェクトの方向性を明確化します。
+
+【現在の状況】
+{}
+
+【既存のコンテキスト】
+{}
+
+【制約事項】
+1. ユーザーとの対話を通じて要件を深掘りしてください。ただし、一問一答ではなく、回答を受けて1〜2つだけ簡潔に深掘りする質問を投げかけてください。
+2. 議論が十分だと判断したら、自ら「次のフェーズへ進みますか？」と提案してください。
+3. フェーズの終了が合意された場合、またはユーザーからの指示があった場合は、`is_finished` を true にし、該当するドキュメント（{}）に記載すべき内容をMarkdownフォーマットで `generated_document` に含めてください。
+4. そうでない場合は `is_finished` は false にし、`generated_document` は null としてください。
+5. 出力は必ず以下のJSON形式のみとし、前後の挨拶やマークダウンブロック(```json)は含めないでください。
+
+{{
+  \"reply\": \"ユーザーへの返信チャットメッセージ\",
+  \"is_finished\": true または false,
+  \"generated_document\": \"Markdown形式のドキュメント内容\" または null
+}}", phase_instruction, context_md, doc_target);
+
+    let client = Client::new();
+    
+    let content = if provider == "gemini" {
+        let mut contents = Vec::new();
+        for msg in messages_history {
+            let role = if msg.role == "user" { "user" } else { "model" };
+            contents.push(serde_json::json!({
+                "role": role,
+                "parts": [{ "text": msg.content }]
+            }));
+        }
+
+        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", api_key);
+        let body = serde_json::json!({
+            "systemInstruction": {
+                "parts": [{ "text": system_prompt }]
+            },
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": 2048,
+                "responseMimeType": "application/json"
+            }
+        });
+
+        let res = client.post(&url).header("content-type", "application/json").json(&body).send().await
+            .map_err(|e| format!("Network request failed: {}", e))?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            return Err(format!("Gemini API Request Failed ({}) - {}", status, text));
+        }
+
+        let res_json: Value = res.json().await.map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        res_json.get("candidates").and_then(|c| c.as_array()).and_then(|arr| arr.get(0)).and_then(|c| c.get("content")).and_then(|c| c.get("parts")).and_then(|p| p.as_array()).and_then(|arr| arr.get(0)).and_then(|p| p.get("text")).and_then(|t| t.as_str())
+            .ok_or_else(|| format!("Extract text failed"))?.to_string()
+    } else {
+        let mut messages = Vec::new();
+        for msg in messages_history {
+            let role = if msg.role == "user" { "user" } else { "assistant" };
+            messages.push(serde_json::json!({ "role": role, "content": msg.content }));
+        }
+
+        let body = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 2048,
+            "system": system_prompt,
+            "messages": messages
+        });
+
+        let res = client.post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", api_key).header("anthropic-version", "2023-06-01").header("content-type", "application/json")
+            .json(&body).send().await.map_err(|e| format!("Network request failed: {}", e))?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            return Err(format!("Anthropic API Request Failed ({}) - {}", status, text));
+        }
+
+        let res_json: Value = res.json().await.map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        res_json.get("content").and_then(|c| c.as_array()).and_then(|arr| arr.get(0)).and_then(|c| c.get("text")).and_then(|t| t.as_str())
+            .ok_or_else(|| format!("Extract text failed"))?.to_string()
+    };
+
+    let cleaned_content = content.replace("```json\n", "").replace("```json", "").replace("\n```", "").replace("```", "").trim().to_string();
+    let response: ChatInceptionResponse = serde_json::from_str(&cleaned_content)
+        .map_err(|e| format!("Failed to parse JSON: {}\nExtracted String: {}", e, cleaned_content))?;
 
     Ok(response)
 }

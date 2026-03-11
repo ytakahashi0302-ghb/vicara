@@ -3,6 +3,8 @@ import { ScrumProvider } from "./context/ScrumContext";
 import { WorkspaceProvider } from "./context/WorkspaceContext";
 import { SprintTimerProvider } from "./context/SprintTimerContext";
 import { ProjectSelector } from "./components/ui/ProjectSelector";
+import { ProjectSettings } from "./components/ui/ProjectSettings";
+import { InceptionDeck } from "./components/project/InceptionDeck";
 import { Board } from "./components/kanban/Board";
 import { Button } from "./components/ui/Button";
 import { useScrum } from "./context/ScrumContext";
@@ -25,7 +27,8 @@ function DeveloperTools() {
         title: "As a PO, I want a Kanban board to visualize tasks",
         description: "MVP sprint item.",
         acceptance_criteria: "- Build UI\n- Test DnD",
-        status: "In Progress"
+        status: "In Progress",
+        archived: false
       });
       console.log('Mock story added:', storyId);
 
@@ -34,7 +37,8 @@ function DeveloperTools() {
         story_id: storyId,
         title: "Setup DnD kit",
         description: "Install and configure dnd-kit",
-        status: "Done"
+        status: "Done",
+        archived: false
       });
 
       await addTask({
@@ -42,7 +46,8 @@ function DeveloperTools() {
         story_id: storyId,
         title: "Implement Swimlanes",
         description: "Create horizontal layout for stories",
-        status: "In Progress"
+        status: "In Progress",
+        archived: false
       });
 
       await addTask({
@@ -50,7 +55,8 @@ function DeveloperTools() {
         story_id: storyId,
         title: "Write documentation",
         description: "Update README and architecture docs",
-        status: "To Do"
+        status: "To Do",
+        archived: false
       });
 
       console.log('Mock tasks added');
@@ -75,6 +81,34 @@ import { SprintTimer } from "./components/SprintTimer";
 
 function AppContent() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [currentView, setCurrentView] = useState<'kanban' | 'inception'>('kanban');
+
+  if (currentView === 'inception') {
+      return (
+          <div className="min-h-screen bg-gray-100 font-sans flex flex-col">
+              <header className="bg-white border-b border-gray-200 sticky top-0 z-20">
+                <div className="w-full mx-auto px-4 sm:px-6 lg:px-8">
+                  <div className="flex justify-between h-16 items-center">
+                    <div className="flex items-center">
+                      <span className="text-lg font-bold text-blue-600 tracking-tight flex items-center gap-2">
+                        MicroScrum AI / Inception Deck
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <button
+                        onClick={() => setCurrentView('kanban')}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
+                      >
+                        カンバンに戻る
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </header>
+              <InceptionDeck />
+          </div>
+      );
+  }
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
@@ -89,8 +123,16 @@ function AppContent() {
                 MicroScrum AI
               </span>
               <ProjectSelector />
+              <ProjectSettings />
             </div>
             <div className="flex items-center gap-4">
+              <button
+                onClick={() => setCurrentView('inception')}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
+                title="AI Inception Deckを起動"
+              >
+                Inception Deck
+              </button>
               <button
                 onClick={() => setIsHistoryOpen(true)}
                 className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
