@@ -9,10 +9,11 @@ import { Story, Task } from '../../types';
 import toast from 'react-hot-toast';
 
 export function BacklogView() {
-    const { stories, tasks, sprints, addStory, createPlannedSprint, startSprint, assignStoryToSprint, assignTaskToSprint } = useScrum();
+    const { stories, tasks, sprints, addStory, updateStory, deleteStory, createPlannedSprint, startSprint, assignStoryToSprint } = useScrum();
     const [isAddStoryModalOpen, setIsAddStoryModalOpen] = useState(false);
     const [isIdeaRefinementModalOpen, setIsIdeaRefinementModalOpen] = useState(false);
     const [storyFormInitialData, setStoryFormInitialData] = useState<Partial<StoryFormData> | undefined>();
+    const [editingStory, setEditingStory] = useState<Story | null>(null);
 
     const backlogStories = useMemo(() => stories.filter(s => !s.sprint_id), [stories]);
     
@@ -72,74 +73,8 @@ export function BacklogView() {
         }
     };
 
-    // Native Drag and Drop matching simple lists
-    const handleDragStartStory = (e: React.DragEvent, storyId: string) => {
-        console.log('Drag Start Story:', storyId);
-        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'story', id: storyId }));
-        e.dataTransfer.effectAllowed = 'move';
-    };
-    const handleDragStartTask = (e: React.DragEvent, taskId: string) => {
-        console.log('Drag Start Task:', taskId);
-        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'task', id: taskId }));
-        e.dataTransfer.effectAllowed = 'move';
-    };
-    
-    const handleDropToSprint = async (e: React.DragEvent) => {
-        e.preventDefault();
-        console.log('Drop to Sprint Triggered');
-        if (!plannedSprint) return;
-        
-        try {
-            const rawData = e.dataTransfer.getData('text/plain');
-            if (!rawData) {
-                console.warn('Drop failed: No text/plain data found');
-                return;
-            }
-            const data = JSON.parse(rawData);
-            console.log('Parsed Drop Data:', data);
-            
-            if (data.type === 'story') {
-                await assignStoryToSprint(data.id, plannedSprint.id);
-            } else if (data.type === 'task') {
-                await assignTaskToSprint(data.id, plannedSprint.id);
-            }
-        } catch (err) {
-            console.error('D&D Parsing Error in Sprint Drop:', err);
-        }
-    };
-    
-    const handleDropToBacklog = async (e: React.DragEvent) => {
-        e.preventDefault();
-        console.log('Drop to Backlog Triggered');
-        
-        try {
-            const rawData = e.dataTransfer.getData('text/plain');
-            if (!rawData) {
-                console.warn('Drop failed: No text/plain data found');
-                return;
-            }
-            const data = JSON.parse(rawData);
-            console.log('Parsed Drop Data (Backlog):', data);
-            
-            if (data.type === 'story') {
-                await assignStoryToSprint(data.id, null);
-            } else if (data.type === 'task') {
-                await assignTaskToSprint(data.id, null);
-            }
-        } catch (err) {
-            console.error('D&D Parsing Error in Backlog Drop:', err);
-        }
-    };
-
-    const handleDragOver = (e: React.DragEvent) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-    };
-
-    const handleDragEnter = (e: React.DragEvent) => {
-        e.preventDefault();
-        // console.log('Drag Enter Triggered'); // コメントアウト: ログが大量に出るため
-    };
+    // Drag and Drop implementation has been removed due to WebView limitations. 
+    // Button-based assignment is used exclusively.
 
     const renderStoryItem = (story: Story, assignedTasks: Task[], isPlanned: boolean) => {
         const totalTasks = assignedTasks.length;
@@ -149,10 +84,16 @@ export function BacklogView() {
         return (
             <div 
                 key={story.id} 
-                draggable 
-                onDragStart={(e) => handleDragStartStory(e, story.id)}
-                className="bg-white p-3 rounded-md shadow-sm border border-gray-200 mb-3 cursor-move hover:border-blue-400 transition-colors group relative"
-                title="ストーリー全体をドラッグすると、子タスクも一緒に移動します"
+                onClick={() => {
+                    setEditingStory(story);
+                    setStoryFormInitialData({
+                        title: story.title,
+                        description: story.description || '',
+                        acceptance_criteria: story.acceptance_criteria || ''
+                    });
+                    setIsAddStoryModalOpen(true);
+                }}
+                className="bg-white p-3 rounded-md shadow-sm border border-gray-200 mb-3 cursor-pointer hover:border-blue-400 hover:shadow-md transition-all group relative"
             >
                 <div className="flex justify-between items-start">
                     <div className="font-semibold text-gray-800 break-words pr-2 flex items-center gap-2">
@@ -169,10 +110,10 @@ export function BacklogView() {
                                 e.stopPropagation();
                                 assignStoryToSprint(story.id, isPlanned ? null : plannedSprint.id);
                             }}
-                            className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-blue-600 transition-opacity bg-gray-50 hover:bg-blue-50 rounded shrink-0 mb-1"
+                            className="opacity-0 group-hover:opacity-100 p-2 text-gray-400 hover:text-blue-600 transition-opacity bg-gray-50 hover:bg-blue-50 rounded shrink-0 mb-1"
                             title={isPlanned ? "バックログに戻す" : "スプリントに追加"}
                         >
-                            {isPlanned ? <ArrowLeft size={16} /> : <ArrowRight size={16} />}
+                            {isPlanned ? <ArrowLeft size={20} /> : <ArrowRight size={20} />}
                         </button>
                     )}
                 </div>
@@ -182,29 +123,12 @@ export function BacklogView() {
                         {assignedTasks.map(t => (
                             <div 
                                 key={t.id} 
-                                draggable
-                                onDragStart={(e) => {
-                                    e.stopPropagation();
-                                    handleDragStartTask(e, t.id);
-                                }}
-                                className={`bg-gray-50 p-2 text-sm rounded border border-gray-100 cursor-move transition-colors flex justify-between items-center group/task ${t.status === 'Done' || t.archived ? 'opacity-50 grayscale hover:bg-gray-50 hover:border-gray-100' : 'hover:bg-gray-100 hover:border-blue-300'}`}
+                                className={`bg-gray-50 p-2 text-sm rounded border border-gray-100 cursor-default transition-colors flex justify-between items-center group/task ${t.status === 'Done' || t.archived ? 'opacity-50 grayscale hover:bg-gray-50 hover:border-gray-100' : 'hover:bg-gray-100 hover:border-blue-300'}`}
                             >
                                 <div className={`flex items-center ${t.status === 'Done' || t.archived ? 'line-through text-gray-500' : ''}`}>
                                     <span className={`inline-block w-2 h-2 rounded-full mr-2 ${t.status === 'Done' || t.archived ? 'bg-green-400' : 'bg-blue-300'}`}></span>
                                     {t.title}
                                 </div>
-                                {plannedSprint && (
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            assignTaskToSprint(t.id, isPlanned ? null : plannedSprint.id);
-                                        }}
-                                        className="opacity-0 group-hover/task:opacity-100 p-1 text-gray-400 hover:text-blue-600 transition-opacity bg-white hover:bg-blue-50 rounded shrink-0"
-                                        title={isPlanned ? "バックログに戻す" : "スプリントに追加"}
-                                    >
-                                        {isPlanned ? <ArrowLeft size={14} /> : <ArrowRight size={14} />}
-                                    </button>
-                                )}
                             </div>
                         ))}
                     </div>
@@ -218,9 +142,6 @@ export function BacklogView() {
             {/* Left: Backlog */}
             <div 
                 className="flex-[1.2] flex flex-col bg-gray-50 rounded-lg border border-gray-200 shadow-inner overflow-hidden"
-                onDrop={handleDropToBacklog}
-                onDragOver={handleDragOver}
-                onDragEnter={handleDragEnter}
             >
                 <div className="flex justify-between items-center p-4 border-b border-gray-200 bg-white">
                     <h2 className="text-base font-bold text-gray-800 flex items-center">
@@ -251,9 +172,6 @@ export function BacklogView() {
                 
                 <div 
                     className="overflow-y-auto flex-1 p-4 min-h-[300px] h-full"
-                    onDrop={handleDropToBacklog}
-                    onDragOver={handleDragOver}
-                    onDragEnter={handleDragEnter}
                 >
                     {backlogStories.length === 0 && tasks.filter(t => !t.sprint_id && !t.archived).length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm p-4 text-center pointer-events-none">
@@ -272,9 +190,6 @@ export function BacklogView() {
             {/* Right: Planned Sprint */}
             <div 
                 className="flex-1 flex flex-col bg-blue-50/30 rounded-lg border border-blue-200 shadow-sm overflow-hidden min-h-[300px]"
-                onDrop={handleDropToSprint}
-                onDragOver={handleDragOver}
-                onDragEnter={handleDragEnter}
             >
                 <div className="flex justify-between items-center p-4 border-b border-blue-100 bg-white">
                     <h2 className="text-base font-bold text-blue-800 flex items-center">
@@ -295,18 +210,15 @@ export function BacklogView() {
 
                 <div 
                     className={ `overflow-y-auto flex-1 p-4 min-h-[300px] h-full ${!plannedSprint ? 'opacity-50 pointer-events-none' : ''}` }
-                    onDrop={handleDropToSprint}
-                    onDragOver={handleDragOver}
-                    onDragEnter={handleDragEnter}
                 >
                     {!plannedSprint ? (
                         <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm p-4 text-center pointer-events-none">
                             <CalendarPlus className="w-8 h-8 opacity-20 mb-2 text-blue-400" />
-                            <p>スプリントを作成すると、<br/>バックログからタスクをドラッグして割り当てられます。</p>
+                            <p>スプリントを作成すると、<br/>バックログからストーリーを割り当てられます。</p>
                         </div>
                     ) : plannedStories.length === 0 && tasks.filter(t => t.sprint_id === plannedSprint.id).length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full text-blue-400/80 text-sm p-4 border-2 border-dashed border-blue-200 rounded-lg bg-blue-50/50 pointer-events-none">
-                            <p>左のバックログから<br/>ストーリーやタスクをドラッグ＆ドロップ</p>
+                            <p>左のバックログから<br/>矢印ボタンでストーリーを追加してください</p>
                         </div>
                     ) : (
                         plannedStories.map(story => {
@@ -323,9 +235,22 @@ export function BacklogView() {
                 onClose={() => {
                     setIsAddStoryModalOpen(false);
                     setStoryFormInitialData(undefined);
+                    setEditingStory(null);
                 }}
-                onSave={handleAddStory}
-                title="ストーリーを追加"
+                onSave={async (data) => {
+                    if (editingStory) {
+                        await updateStory({
+                            ...editingStory,
+                            ...data
+                        });
+                    } else {
+                        await handleAddStory(data);
+                    }
+                }}
+                onDelete={editingStory ? async () => {
+                    await deleteStory(editingStory.id);
+                } : undefined}
+                title={editingStory ? "ストーリーを編集" : "ストーリーを追加"}
             />
 
             <IdeaRefinementDrawer
