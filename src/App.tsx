@@ -6,12 +6,14 @@ import { ProjectSelector } from "./components/ui/ProjectSelector";
 import { ProjectSettings } from "./components/ui/ProjectSettings";
 import { InceptionDeck } from "./components/project/InceptionDeck";
 import { ScrumDashboard } from "./components/kanban/ScrumDashboard";
+import { TeamLeaderSidebar } from "./components/ai/TeamLeaderSidebar";
 import { Button } from "./components/ui/Button";
 import { useScrum } from "./context/ScrumContext";
 import { Toaster } from 'react-hot-toast';
 import { useState } from 'react';
-import { History } from 'lucide-react';
+import { History, Bot } from 'lucide-react';
 import { HistoryModal } from './components/HistoryModal';
+import { SprintTimer } from "./components/SprintTimer";
 import "./App.css";
 
 // 開発用の初期データ投入ボタン等を含むコンポーネント（今後整理）
@@ -68,7 +70,7 @@ function DeveloperTools() {
   };
 
   return (
-    <div className="fixed bottom-4 right-4 bg-white p-4 rounded-lg shadow-lg border border-gray-200 z-50">
+    <div className="fixed bottom-4 left-4 bg-white p-4 rounded-lg shadow-lg border border-gray-200 z-50">
       <h3 className="text-sm font-bold mb-2">Dev Tools</h3>
       <Button onClick={handleCreateMockData} size="sm" variant="secondary">
         Add Mock Data
@@ -77,11 +79,10 @@ function DeveloperTools() {
   );
 }
 
-import { SprintTimer } from "./components/SprintTimer";
-
 function AppContent() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [currentView, setCurrentView] = useState<'kanban' | 'inception'>('kanban');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   if (currentView === 'inception') {
       return (
@@ -111,8 +112,8 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 font-sans">
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-20">
+    <div className="h-screen bg-gray-100 font-sans flex flex-col overflow-hidden">
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-20 shrink-0">
         <div className="w-full mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
             <div className="flex items-center">
@@ -125,7 +126,7 @@ function AppContent() {
               <ProjectSelector />
               <ProjectSettings />
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
               <button
                 onClick={() => setCurrentView('inception')}
                 className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors"
@@ -141,17 +142,37 @@ function AppContent() {
                 <History size={16} />
                 <span className="hidden sm:inline">履歴</span>
               </button>
+              <button
+                onClick={() => setIsSidebarOpen(prev => !prev)}
+                className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-md transition-all duration-200 ${
+                  isSidebarOpen
+                    ? 'text-indigo-700 bg-indigo-100 border border-indigo-300 shadow-sm'
+                    : 'text-indigo-600 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 hover:shadow-sm'
+                }`}
+                title={isSidebarOpen ? 'AI Team Leaderを閉じる' : 'AI Team Leaderを開く'}
+              >
+                <Bot size={16} />
+                <span className="hidden sm:inline">AI Leader</span>
+              </button>
             </div>
           </div>
         </div>
         <SprintTimer />
       </header>
 
-      <main className="w-full mx-auto px-4 sm:px-6 lg:px-8 lg:h-[calc(100vh-120px)] overflow-hidden">
-        <div className="h-full overflow-hidden">
-          <ScrumDashboard />
-        </div>
-      </main>
+      {/* Main content area: flex row for dashboard + sidebar */}
+      <div className="flex-1 flex overflow-hidden">
+        <main className="flex-1 overflow-hidden">
+          <div className="h-full overflow-hidden">
+            <ScrumDashboard />
+          </div>
+        </main>
+
+        <TeamLeaderSidebar
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+        />
+      </div>
 
       {import.meta.env.DEV && <DeveloperTools />}
 

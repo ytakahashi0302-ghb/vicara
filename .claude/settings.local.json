@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(find C:/Users/green/.cargo/registry/src -path */filedescriptor*/*.rs -name *.rs)",
+      "Bash(cargo clippy:*)"
+    ]
+  }
+}

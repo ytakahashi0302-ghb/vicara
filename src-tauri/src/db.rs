@@ -61,9 +61,9 @@ pub struct Sprint {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
-pub struct TaskMessage {
+pub struct TeamChatMessage {
     pub id: String,
-    pub task_id: String,
+    pub project_id: String,
     pub role: String,
     pub content: String,
     pub created_at: String,
@@ -223,7 +223,7 @@ pub async fn get_stories(app: AppHandle, project_id: String) -> Result<Vec<Story
     let query = "SELECT * FROM stories WHERE archived = 0 AND project_id = ? ORDER BY created_at DESC";
     let values = vec![serde_json::to_value(project_id).unwrap()];
     let stories = select_query::<Story>(&app, query, values).await?;
-    println!("Fetched stories: {:?}", stories);
+    log::debug!("Fetched stories: {:?}", stories);
     Ok(stories)
 }
 
@@ -277,7 +277,7 @@ pub async fn get_tasks(app: AppHandle, project_id: String) -> Result<Vec<Task>, 
     let query = "SELECT tasks.* FROM tasks JOIN stories ON tasks.story_id = stories.id WHERE stories.archived = 0 AND tasks.project_id = ? ORDER BY tasks.created_at ASC";
     let values = vec![serde_json::to_value(project_id).unwrap()];
     let tasks = select_query::<Task>(&app, query, values).await?;
-    println!("Fetched tasks: {:?}", tasks);
+    log::debug!("Fetched tasks: {:?}", tasks);
     Ok(tasks)
 }
 
@@ -344,22 +344,22 @@ pub async fn delete_task(app: AppHandle, id: String) -> Result<QueryResult, Stri
 }
 
 // ------------------------------------------------------------------------------------------------
-// Task Messages CRUD
+// Team Chat Messages CRUD (AI Team Leader)
 // ------------------------------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_task_messages(app: AppHandle, task_id: String) -> Result<Vec<TaskMessage>, String> {
-    let query = "SELECT * FROM task_messages WHERE task_id = ? ORDER BY created_at ASC";
-    let values = vec![serde_json::to_value(task_id).unwrap()];
-    select_query::<TaskMessage>(&app, query, values).await
+pub async fn get_team_chat_messages(app: AppHandle, project_id: String) -> Result<Vec<TeamChatMessage>, String> {
+    let query = "SELECT * FROM team_chat_messages WHERE project_id = ? ORDER BY created_at ASC";
+    let values = vec![serde_json::to_value(project_id).unwrap()];
+    select_query::<TeamChatMessage>(&app, query, values).await
 }
 
 #[tauri::command]
-pub async fn add_task_message(app: AppHandle, id: String, task_id: String, role: String, content: String) -> Result<QueryResult, String> {
-    let query = "INSERT INTO task_messages (id, task_id, role, content) VALUES (?, ?, ?, ?)";
+pub async fn add_team_chat_message(app: AppHandle, id: String, project_id: String, role: String, content: String) -> Result<QueryResult, String> {
+    let query = "INSERT INTO team_chat_messages (id, project_id, role, content) VALUES (?, ?, ?, ?)";
     let values = vec![
         serde_json::to_value(id).unwrap(),
-        serde_json::to_value(task_id).unwrap(),
+        serde_json::to_value(project_id).unwrap(),
         serde_json::to_value(role).unwrap(),
         serde_json::to_value(content).unwrap(),
     ];
@@ -367,9 +367,9 @@ pub async fn add_task_message(app: AppHandle, id: String, task_id: String, role:
 }
 
 #[tauri::command]
-pub async fn clear_task_messages(app: AppHandle, task_id: String) -> Result<QueryResult, String> {
-    let query = "DELETE FROM task_messages WHERE task_id = ?";
-    let values = vec![serde_json::to_value(task_id).unwrap()];
+pub async fn clear_team_chat_messages(app: AppHandle, project_id: String) -> Result<QueryResult, String> {
+    let query = "DELETE FROM team_chat_messages WHERE project_id = ?";
+    let values = vec![serde_json::to_value(project_id).unwrap()];
     execute_query(&app, query, values).await
 }
 
@@ -537,6 +537,7 @@ pub async fn build_project_context(app: &AppHandle, project_id: &str) -> Result<
 
     let mut md = String::new();
 
+    // 1. プロジェクトドキュメントの読み込み
     if let Some(path) = local_path {
         let p = std::path::Path::new(&path);
         if p.exists() && p.is_dir() {
@@ -552,6 +553,14 @@ pub async fn build_project_context(app: &AppHandle, project_id: &str) -> Result<
         }
     }
 
+    // 2. スプリント情報の取得
+    let query_sprints = "SELECT * FROM sprints WHERE project_id = ? AND status != 'Completed' ORDER BY status ASC";
+    let sprints = select_query::<Sprint>(app, query_sprints, vec![serde_json::to_value(project_id).unwrap()]).await?;
+
+    let active_sprint_id = sprints.iter().find(|s| s.status == "Active").map(|s| s.id.clone());
+    let planned_sprint_ids: Vec<String> = sprints.iter().filter(|s| s.status == "Planned").map(|s| s.id.clone()).collect();
+
+    // 3. ストーリーとタスクの取得
     let query_stories = "SELECT * FROM stories WHERE archived = 0 AND project_id = ? ORDER BY created_at ASC";
     let stories = select_query::<Story>(app, query_stories, vec![serde_json::to_value(project_id).unwrap()]).await?;
     
@@ -561,22 +570,54 @@ pub async fn build_project_context(app: &AppHandle, project_id: &str) -> Result<
     if stories.is_empty() && tasks.is_empty() && md.is_empty() {
         return Ok(String::new());
     }
-    
-    if !stories.is_empty() || !tasks.is_empty() {
-        md.push_str("\n【現在のプロジェクトコンテキスト（既存のストーリーとタスク）】\n");
+
+    // ストーリーとタスクの描画ヘルパー
+    let render_stories = |stories_filtered: Vec<&Story>, tasks_all: &[Task]| -> String {
+        let mut out = String::new();
+        for story in stories_filtered {
+            let desc = story.description.clone().unwrap_or_default().replace('\n', " ");
+            let short_desc = if desc.chars().count() > 50 {
+                format!("{}...", desc.chars().take(50).collect::<String>())
+            } else {
+                desc
+            };
+            let desc_str = if short_desc.is_empty() { String::new() } else { format!(": {}", short_desc) };
+            out.push_str(&format!("- Story: {}{} (Status: {})\n", story.title, desc_str, story.status));
+            
+            for task in tasks_all.iter().filter(|t| t.story_id == story.id) {
+                let status_icon = match task.status.as_str() {
+                    "Done" => " ✅",
+                    "In Progress" => " 🔄",
+                    _ => "",
+                };
+                out.push_str(&format!("  - Task: {} (Status: {}){}\n", task.title, task.status, status_icon));
+            }
+        }
+        out
+    };
+
+    // 4. プロダクトバックログ（sprint_id IS NULL）
+    let backlog_stories: Vec<&Story> = stories.iter().filter(|s| s.sprint_id.is_none()).collect();
+    if !backlog_stories.is_empty() {
+        md.push_str("\n【プロダクトバックログ（未着手）】\n");
+        md.push_str(&render_stories(backlog_stories, &tasks));
     }
-    for story in stories {
-        let desc = story.description.unwrap_or_default().replace('\n', " ");
-        let short_desc = if desc.chars().count() > 50 {
-            format!("{}...", desc.chars().take(50).collect::<String>())
-        } else {
-            desc
-        };
-        let desc_str = if short_desc.is_empty() { String::new() } else { format!(": {}", short_desc) };
-        md.push_str(&format!("- Story: {}{} (Status: {})\n", story.title, desc_str, story.status));
-        
-        for task in tasks.iter().filter(|t| t.story_id == story.id) {
-            md.push_str(&format!("  - Task: {} (Status: {})\n", task.title, task.status));
+
+    // 5. アクティブスプリント
+    if let Some(ref active_id) = active_sprint_id {
+        let active_stories: Vec<&Story> = stories.iter().filter(|s| s.sprint_id.as_deref() == Some(active_id.as_str())).collect();
+        if !active_stories.is_empty() {
+            md.push_str(&format!("\n【アクティブスプリント（進行中）】Sprint ID: {}\n", active_id));
+            md.push_str(&render_stories(active_stories, &tasks));
+        }
+    }
+
+    // 6. 計画中スプリント (Planned)
+    for planned_id in &planned_sprint_ids {
+        let planned_stories: Vec<&Story> = stories.iter().filter(|s| s.sprint_id.as_deref() == Some(planned_id.as_str())).collect();
+        if !planned_stories.is_empty() {
+            md.push_str(&format!("\n【計画中スプリント (Planned)】Sprint ID: {}\n", planned_id));
+            md.push_str(&render_stories(planned_stories, &tasks));
         }
     }
     

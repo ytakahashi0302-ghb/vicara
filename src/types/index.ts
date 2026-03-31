@@ -43,10 +43,10 @@ export interface Task {
     updated_at: string;
 }
 
-export interface TaskMessage {
+export interface TeamChatMessage {
     id: string;
-    task_id: string;
-    role: 'user' | 'assistant' | 'model'; // Gemini may use 'model', Claude 'assistant'
+    project_id: string;
+    role: 'user' | 'assistant' | 'model';
     content: string;
     created_at: string;
 }

@@ -1,6 +1,9 @@
 mod ai;
 mod db;
 mod inception;
+mod pty_commands;
+mod pty_manager;
+mod rig_provider;
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -53,6 +56,12 @@ pub fn run() {
             description: "scrum_foundation",
             sql: include_str!("../migrations/7_scrum_foundation.sql"),
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 8,
+            description: "ai_team_leader",
+            sql: include_str!("../migrations/8_ai_team_leader.sql"),
+            kind: MigrationKind::Up,
         }
     ];
 
@@ -65,12 +74,28 @@ pub fn run() {
                 .add_migrations("sqlite:ai-scrum.db", migrations)
                 .build(),
         )
+        .manage(pty_manager::PtyManager::new())
         .setup(|app| {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Wait slightly to ensure DB is initialized
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let _ = db::execute_query(&app_handle, "PRAGMA foreign_keys = ON;", vec![]).await;
+            });
+            // PTY auto-cleanup: every 5 minutes, kill sessions idle for 30+ minutes
+            let cleanup_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri::Manager;
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+                interval.tick().await; // skip immediate first tick
+                loop {
+                    interval.tick().await;
+                    cleanup_handle
+                        .state::<pty_manager::PtyManager>()
+                        .cleanup_idle_sessions(std::time::Duration::from_secs(30 * 60))
+                        .await;
+                }
             });
             Ok(())
         })
@@ -105,10 +130,13 @@ pub fn run() {
             inception::read_inception_file,
             inception::write_inception_file,
             ai::chat_inception,
-            db::get_task_messages,
-            db::add_task_message,
-            db::clear_task_messages,
-            ai::chat_with_task_ai
+            db::get_team_chat_messages,
+            db::add_team_chat_message,
+            db::clear_team_chat_messages,
+            ai::chat_with_team_leader,
+            pty_commands::pty_spawn,
+            pty_commands::pty_execute,
+            pty_commands::pty_kill
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
