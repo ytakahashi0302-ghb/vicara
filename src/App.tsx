@@ -11,10 +11,11 @@ import { Button } from "./components/ui/Button";
 import { useScrum } from "./context/ScrumContext";
 import { Toaster } from 'react-hot-toast';
 import { useState } from 'react';
-import { History, Bot } from 'lucide-react';
+import { History, Bot, Settings } from 'lucide-react';
 import { HistoryModal } from './components/HistoryModal';
 import { SprintTimer } from "./components/SprintTimer";
 import { TerminalDock } from './components/terminal/TerminalDock';
+import { GlobalSettingsModal } from './components/ui/GlobalSettingsModal';
 import "./App.css";
 
 // 開発用の初期データ投入ボタン等を含むコンポーネント（今後整理）
@@ -85,6 +86,7 @@ function AppContent() {
   const [currentView, setCurrentView] = useState<'kanban' | 'inception'>('kanban');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isTerminalMinimized, setIsTerminalMinimized] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   if (currentView === 'inception') {
       return (
@@ -127,6 +129,13 @@ function AppContent() {
               </span>
               <ProjectSelector />
               <ProjectSettings />
+              <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="ml-2 p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+                title="Global Settings"
+              >
+                <Settings size={20} />
+              </button>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -210,6 +219,11 @@ function AppContent() {
       <HistoryModal
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
+      />
+      
+      <GlobalSettingsModal 
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
       />
     </div>
   );

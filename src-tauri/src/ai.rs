@@ -47,7 +47,7 @@ pub async fn generate_tasks_from_story(
     provider: String,
     project_id: String,
 ) -> Result<Vec<GeneratedTask>, String> {
-    let (provider_enum, api_key) = crate::rig_provider::resolve_provider_and_key(&app, Some(provider)).await?;
+    let (provider_enum, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, Some(provider)).await?;
     let _context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
     let prompt = format!("Context: {}\nStory: {}\nDesc: {}\nAC: {}\nJSON Array Output Please.", _context_md, title, description, acceptance_criteria);
 
@@ -55,6 +55,7 @@ pub async fn generate_tasks_from_story(
     let response = crate::rig_provider::chat_with_history(
         &provider_enum,
         &api_key,
+        &model,
         system_prompt,
         &prompt,
         vec![], // No conversation history
@@ -73,7 +74,7 @@ pub async fn refine_idea(
     previous_context: Option<Vec<Message>>,
     project_id: String,
 ) -> Result<RefinedIdeaResponse, String> {
-    let (provider, api_key) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
+    let (provider, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
     let _context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
 
     let chat_history = if let Some(ctx) = previous_context {
@@ -86,6 +87,7 @@ pub async fn refine_idea(
     let content = crate::rig_provider::chat_with_history(
         &provider,
         &api_key,
+        &model,
         system_prompt,
         &idea_seed,
         chat_history,
@@ -104,7 +106,7 @@ pub async fn chat_inception(
     _phase: u32,
     messages_history: Vec<Message>,
 ) -> Result<ChatInceptionResponse, String> {
-    let (provider, api_key) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
+    let (provider, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
     let _context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
 
     let chat_history = crate::rig_provider::convert_messages(&messages_history);
@@ -113,6 +115,7 @@ pub async fn chat_inception(
     let content = crate::rig_provider::chat_with_history(
         &provider,
         &api_key,
+        &model,
         system_prompt,
         "", // Empty user input - using chat history instead
         chat_history,
@@ -120,8 +123,22 @@ pub async fn chat_inception(
     .await?;
 
     let re = regex::Regex::new(r"(?s)\{.*?\}").unwrap();
-    let json_str = re.captures(&content).and_then(|caps| caps.get(0)).map_or(content.as_str(), |m| m.as_str());
-    serde_json::from_str(json_str).map_err(|e| e.to_string())
+    let json_str = if let Some(caps) = re.captures(&content) {
+        caps.get(0).unwrap().as_str()
+    } else {
+        &content
+    };
+
+    let resp: ChatInceptionResponse = match serde_json::from_str(json_str) {
+        Ok(r) => r,
+        Err(_) => ChatInceptionResponse {
+            reply: content, // JSONでない自然言語の場合はそのまま返却
+            is_finished: false,
+            generated_document: None,
+        },
+    };
+
+    Ok(resp)
 }
 
 #[tauri::command]
@@ -130,7 +147,7 @@ pub async fn chat_with_team_leader(
     project_id: String,
     messages_history: Vec<Message>,
 ) -> Result<ChatTaskResponse, String> {
-    let (provider, api_key) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
+    let (provider, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
     let _context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
 
     let chat_history = crate::rig_provider::convert_messages(&messages_history);
@@ -143,6 +160,7 @@ pub async fn chat_with_team_leader(
         &app,
         &provider,
         &api_key,
+        &model,
         &system_prompt,
         "", // Empty user input - using chat history instead
         chat_history,

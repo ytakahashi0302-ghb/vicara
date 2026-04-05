@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useMemo, useCallback } from 'react';
 import {
     DndContext,
     closestCorners,
@@ -11,13 +11,9 @@ import {
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { useScrum } from '../../context/ScrumContext';
 import { StorySwimlane } from './StorySwimlane';
-import { Settings } from 'lucide-react';
-import { Button } from '../ui/Button';
-import { SettingsModal } from '../SettingsModal';
 
 export function Board() {
     const { stories, tasks, sprints, updateTaskStatus, loading } = useScrum();
-    const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
     
     const activeSprint = useMemo(() => {
         return sprints.find(s => s.status === 'Active');
@@ -106,21 +102,11 @@ export function Board() {
     if (!activeSprint) {
         return (
             <div className="p-6 bg-gray-100 h-full flex flex-col">
-                <div className="flex justify-end mb-4">
-                    <Button variant="secondary" onClick={() => setIsSettingsModalOpen(true)}>
-                        <Settings size={20} className="mr-2" />
-                        設定
-                    </Button>
-                </div>
                 <div className="flex-1 flex flex-col items-center justify-center p-12 text-center bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
                     <h3 className="text-lg font-medium text-gray-900 mb-2">アクティブなスプリントがありません</h3>
                     <p className="text-sm text-gray-500 max-w-sm mb-6">
                         バックログ画面から次のスプリントを計画し、開始してください。
                     </p>
-                    <SettingsModal
-                        isOpen={isSettingsModalOpen}
-                        onClose={() => setIsSettingsModalOpen(false)}
-                    />
                 </div>
             </div>
         );
@@ -129,21 +115,11 @@ export function Board() {
     if (activeStories.length === 0) {
         return (
             <div className="p-6 bg-gray-100 h-full flex flex-col">
-                <div className="flex justify-end mb-4">
-                    <Button variant="secondary" onClick={() => setIsSettingsModalOpen(true)}>
-                        <Settings size={20} className="mr-2" />
-                        設定
-                    </Button>
-                </div>
                 <div className="flex-1 flex flex-col items-center justify-center p-12 text-center bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
                     <h3 className="text-lg font-medium text-gray-900 mb-2">タスクがありません</h3>
                     <p className="text-sm text-gray-500 max-w-sm mb-6">
                         このスプリントにはタスクが割り当てられていません。バックログから追加してください。
                     </p>
-                    <SettingsModal
-                        isOpen={isSettingsModalOpen}
-                        onClose={() => setIsSettingsModalOpen(false)}
-                    />
                 </div>
             </div>
         );
@@ -153,12 +129,6 @@ export function Board() {
         <div className="p-6 bg-gray-100 h-full">
             <div className="mb-6 flex justify-between items-center">
                 <h1 className="text-2xl font-bold text-gray-900">スプリントボード</h1>
-                <div className="flex gap-2">
-                    <Button variant="secondary" onClick={() => setIsSettingsModalOpen(true)}>
-                        <Settings size={20} className="mr-2" />
-                        設定
-                    </Button>
-                </div>
             </div>
 
             <DndContext
@@ -176,11 +146,6 @@ export function Board() {
                     ))}
                 </div>
             </DndContext>
-
-            <SettingsModal
-                isOpen={isSettingsModalOpen}
-                onClose={() => setIsSettingsModalOpen(false)}
-            />
         </div>
     );
 }

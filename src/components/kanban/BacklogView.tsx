@@ -1,9 +1,8 @@
 import { useState, useMemo } from 'react';
 import { useScrum } from '../../context/ScrumContext';
 import { Button } from '../ui/Button';
-import { Lightbulb, Plus, CalendarPlus, Play, ArrowRight, ArrowLeft } from 'lucide-react';
+import { Plus, CalendarPlus, Play, ArrowRight, ArrowLeft } from 'lucide-react';
 import { StoryFormModal, StoryFormData } from '../board/StoryFormModal';
-import { IdeaRefinementDrawer } from '../ai/IdeaRefinementDrawer';
 import { v4 as uuidv4 } from 'uuid';
 import { Story, Task } from '../../types';
 import toast from 'react-hot-toast';
@@ -11,7 +10,6 @@ import toast from 'react-hot-toast';
 export function BacklogView() {
     const { stories, tasks, sprints, addStory, updateStory, deleteStory, createPlannedSprint, startSprint, assignStoryToSprint } = useScrum();
     const [isAddStoryModalOpen, setIsAddStoryModalOpen] = useState(false);
-    const [isIdeaRefinementModalOpen, setIsIdeaRefinementModalOpen] = useState(false);
     const [storyFormInitialData, setStoryFormInitialData] = useState<Partial<StoryFormData> | undefined>();
     const [editingStory, setEditingStory] = useState<Story | null>(null);
 
@@ -151,15 +149,6 @@ export function BacklogView() {
                         </span>
                     </h2>
                     <div className="flex gap-2">
-                        <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => setIsIdeaRefinementModalOpen(true)}
-                            className="bg-yellow-50 hover:bg-yellow-100 text-yellow-800 border-yellow-200"
-                        >
-                            <Lightbulb size={16} className="sm:mr-1" />
-                            <span className="hidden sm:inline">アイデア</span>
-                        </Button>
                         <Button size="sm" onClick={() => {
                             setStoryFormInitialData(undefined);
                             setIsAddStoryModalOpen(true);
@@ -175,7 +164,6 @@ export function BacklogView() {
                 >
                     {backlogStories.length === 0 && tasks.filter(t => !t.sprint_id && !t.archived).length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm p-4 text-center pointer-events-none">
-                            <Lightbulb className="w-8 h-8 opacity-20 mb-2" />
                             <p>バックログは空です。<br/>ストーリーを作成して、プロジェクトを計画しましょう。</p>
                         </div>
                     ) : (
@@ -251,16 +239,6 @@ export function BacklogView() {
                     await deleteStory(editingStory.id);
                 } : undefined}
                 title={editingStory ? "ストーリーを編集" : "ストーリーを追加"}
-            />
-
-            <IdeaRefinementDrawer
-                isOpen={isIdeaRefinementModalOpen}
-                onClose={() => setIsIdeaRefinementModalOpen(false)}
-                onComplete={(data) => {
-                    setStoryFormInitialData(data);
-                    setIsIdeaRefinementModalOpen(false);
-                    setIsAddStoryModalOpen(true);
-                }}
             />
         </div>
     );

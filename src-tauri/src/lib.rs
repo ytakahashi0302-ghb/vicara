@@ -135,6 +135,7 @@ pub fn run() {
             db::add_team_chat_message,
             db::clear_team_chat_messages,
             ai::chat_with_team_leader,
+            rig_provider::get_available_models,
             pty_commands::pty_spawn,
             pty_commands::pty_execute,
             pty_commands::pty_kill

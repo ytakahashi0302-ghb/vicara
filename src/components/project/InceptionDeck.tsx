@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { invoke } from '@tauri-apps/api/core';
+import { load } from '@tauri-apps/plugin-store';
 import toast from 'react-hot-toast';
 
 interface ChatMessage {
@@ -30,7 +31,7 @@ export function InceptionDeck() {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    // Initial Load & Base Rule Generation
+    // Initial Load & Base Rule Generation, plus Store Hydration
     useEffect(() => {
         const initDeck = async () => {
             if (!currentProject?.local_path) return;
@@ -59,7 +60,17 @@ export function InceptionDeck() {
                 if (hasExistingFiles) {
                     initialMessage = "既存のファイルが見つかりました。\n右のプレビューを確認し、この内容をベースに修正を加えますか？それとも既存のまま次へ進みますか？\n" + initialMessage;
                 }
-                setMessages([{ role: 'assistant', content: initialMessage }]);
+                
+                // Load saved chat state from store
+                const store = await load('settings.json');
+                const savedState = await store.get<{ messages: ChatMessage[], currentPhase: number }>(`inception-chat-${currentProject.id}`);
+                
+                if (savedState && savedState.messages && savedState.messages.length > 0) {
+                    setMessages(savedState.messages);
+                    if (savedState.currentPhase) setCurrentPhase(savedState.currentPhase);
+                } else {
+                    setMessages([{ role: 'assistant', content: initialMessage }]);
+                }
             } catch (error) {
                 console.error('Failed to init inception files:', error);
                 toast.error('初期化に失敗しました');
@@ -81,6 +92,21 @@ export function InceptionDeck() {
             setActiveTab('RULE');
         }
     }, [currentPhase]);
+
+    // Save chat state and phase to store
+    useEffect(() => {
+        if (!currentProject || messages.length === 0) return;
+        const saveState = async () => {
+            try {
+                const store = await load('settings.json');
+                await store.set(`inception-chat-${currentProject.id}`, { messages, currentPhase });
+                await store.save();
+            } catch (error) {
+                console.error('Failed to save inception state:', error);
+            }
+        };
+        saveState();
+    }, [messages, currentPhase, currentProject?.id]);
 
     // Auto-scroll chat
     useEffect(() => {

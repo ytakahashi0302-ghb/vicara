@@ -7,13 +7,17 @@
 > [!IMPORTANT]
 > - **プロジェクト削除UIの配置場所**: 現在の `ProjectSelector`（ドロップダウン等）の横に設定アイコン（⚙️）を配置し、そこから開く「プロジェクト設定 / グローバル設定モーダル」内にプロジェクト削除機能とAIモデル設定機能を統合しようと考えていますが、このアプローチでよろしいでしょうか？
 > - **Inception Deckの永続化先**: Tauriの `@tauri-apps/plugin-store` (`settings.json`) を用いて、`inception-chat-${projectId}` のようなキーでチャット履歴と現在のフェーズを保存・復元する方針です。これによりアプリ再起動時も履歴が保持されます。
+> - **AIモデル一覧の動的取得**: APIキーを用いてAnthropicおよびGeminiのモデル一覧取得APIを叩き、利用可能なモデル名を動的に取得してドロップダウンに表示します。エラー時や未設定時のためにカスタムテキスト入力フォールバックも設けます。
 
 ## Proposed Changes
 
 ### 1. ハードコード系の解消
 
+#### [NEW] APIからのモデル動的取得機能
+- Tauri側 (`src-tauri/src/ai.rs` または `rig_provider.rs`) に、プロバイダーのAPI（Anthropic / Gemini）を直接叩いて利用可能なモデル一覧（文字列配列）を取得するコマンド `get_available_models` を新規実装します。
+
 #### [MODIFY] src-tauri/src/rig_provider.rs
-- `chat_anthropic`, `chat_gemini`, `chat_team_leader_with_tools` 内でハードコードされているAIモデル名（`claude-haiku-4-5-20251001`, `gemini-2.0-flash`）を、Tauri Store から取得するように改修します。
+- `chat_anthropic`, `chat_gemini`, `chat_team_leader_with_tools` 内でハードコードされているAIモデル名（`claude-haiku-4-5-20251001`, `gemini-2.0-flash`）を、Tauri Store から取得する動的モデル名 (`anthropic-model`, `gemini-model`) を使うように改修します。
 - ストアに値がない場合のデフォルト値として既存のモデル名をフォールバック指定します。
 
 #### [MODIFY] src/context/WorkspaceContext.tsx
@@ -39,7 +43,10 @@
 
 #### [NEW] src/components/ui/GlobalSettingsModal.tsx (新規作成)
 - 新しい設定用のモーダルを作成し、以下の機能を提供します。
-  - AIモデル設定（Anthropic / Gemini 各々の利用モデル名のテキスト入力等）
+  - AIモデル設定
+    - ドロップダウンでプロバイダを選択
+    - 選択したプロバイダの `get_available_models` コマンドを呼び出し、モデル一覧を動的に取得してリスト表示
+    - エラー時用の手動入力（カスタムテキスト入力欄）のフォールバック
   - 現在選択中のプロジェクトの「削除」機能と確認ダイアログ（Interaction Guardは既存の仕組みと調整）
 
 #### [MODIFY] src/App.tsx & ヘッダーコンポーネント
@@ -48,7 +55,7 @@
 
 ## Open Questions
 
-- AIモデルの設定は単純にテキスト入力（例: `claude-3-5-sonnet-20241022` などを手打ち）とするか、主要モデルのドロップダウンにするかご希望はありますか？（まずは柔軟なテキスト入力を想定しています）
+- 全てのオープンクエスチョンに対する回答は受理し、反映済みです。
 
 ## Verification Plan
 

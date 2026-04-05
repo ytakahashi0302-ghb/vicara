@@ -10,6 +10,7 @@ interface WorkspaceContextType {
     fetchProjects: () => Promise<void>;
     addProject: (id: string, name: string, description: string | null) => Promise<void>;
     updateProjectPath: (id: string, localPath: string | null) => Promise<{ success: boolean; has_product_context: boolean; has_architecture: boolean; has_rule: boolean }>;
+    deleteProject: (id: string) => Promise<void>;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
@@ -22,6 +23,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         try {
             const result = await invoke<Project[]>('get_projects');
             setProjects(result);
+            
+            // Fallback selection if current project is no longer valid or is the default
+            setCurrentProjectIdState(prev => {
+                if (!result.find(p => p.id === prev)) {
+                    return result.length > 0 ? result[0].id : 'default';
+                }
+                if (prev === 'default' && result.length > 0) {
+                    return result[0].id;
+                }
+                return prev;
+            });
         } catch (err) {
             console.error('Failed to fetch projects', err);
             toast.error(`プロジェクトの取得に失敗しました: ${err}`);
@@ -69,13 +81,26 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
     }, [fetchProjects]);
 
+    const deleteProject = useCallback(async (id: string) => {
+        try {
+            await invoke('delete_project', { id });
+            await fetchProjects();
+            toast.success('プロジェクトを削除しました');
+        } catch (err) {
+            console.error('Failed to delete project', err);
+            toast.error(`プロジェクトの削除に失敗しました: ${err}`);
+            throw err;
+        }
+    }, [fetchProjects]);
+
     const value = {
         projects,
         currentProjectId,
         setCurrentProjectId,
         fetchProjects,
         addProject,
-        updateProjectPath
+        updateProjectPath,
+        deleteProject
     };
 
     return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
