@@ -4,7 +4,7 @@ use rig::completion::message::Message as RigMessage;
 use rig::completion::Chat;
 use rig::providers::anthropic;
 use rig::providers::anthropic::completion::{
-    CompletionModel as AnthropicModel, CLAUDE_3_5_HAIKU,
+    CompletionModel as AnthropicModel,
 };
 use rig::providers::gemini;
 use rig::providers::gemini::completion::{CompletionModel as GeminiModel, GEMINI_2_0_FLASH};
@@ -100,7 +100,7 @@ async fn chat_anthropic(
     let client = anthropic::Client::new(api_key)
         .map_err(|e| format!("Failed to create Anthropic client: {}", e))?;
     let agent: Agent<AnthropicModel> = client
-        .agent(CLAUDE_3_5_HAIKU)
+        .agent("claude-haiku-4-5-20251001")
         .preamble(system_prompt)
         .max_tokens(4096)
         .build();

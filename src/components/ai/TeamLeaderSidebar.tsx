@@ -28,9 +28,13 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
         }
     }, [isOpen, currentProjectId]);
 
-    // Auto-scroll to bottom
+    // Auto-scroll to bottom (with slight delay for accurate DOM height calculation after markdown render)
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const scrollToBottom = () => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        };
+        // DOM update delay
+        setTimeout(scrollToBottom, 50);
     }, [messages, isLoading]);
 
     // Focus textarea when panel opens
@@ -150,8 +154,8 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
 
     return (
         <div
-            className={`flex flex-col border-l border-gray-200 bg-white transition-all duration-300 ease-in-out overflow-hidden ${
-                isOpen ? 'w-[380px] min-w-[380px]' : 'w-0 min-w-0'
+            className={`flex flex-col h-full w-full bg-white transition-opacity duration-300 ease-in-out overflow-hidden border-none ${
+                isOpen ? 'opacity-100' : 'opacity-0 hidden'
             }`}
         >
             {isOpen && (

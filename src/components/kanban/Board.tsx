@@ -105,7 +105,7 @@ export function Board() {
 
     if (!activeSprint) {
         return (
-            <div className="p-6 bg-gray-100 min-h-screen flex flex-col">
+            <div className="p-6 bg-gray-100 h-full flex flex-col">
                 <div className="flex justify-end mb-4">
                     <Button variant="secondary" onClick={() => setIsSettingsModalOpen(true)}>
                         <Settings size={20} className="mr-2" />
@@ -128,7 +128,7 @@ export function Board() {
     
     if (activeStories.length === 0) {
         return (
-            <div className="p-6 bg-gray-100 min-h-screen flex flex-col">
+            <div className="p-6 bg-gray-100 h-full flex flex-col">
                 <div className="flex justify-end mb-4">
                     <Button variant="secondary" onClick={() => setIsSettingsModalOpen(true)}>
                         <Settings size={20} className="mr-2" />
@@ -150,7 +150,7 @@ export function Board() {
     }
 
     return (
-        <div className="p-6 bg-gray-100 min-h-screen">
+        <div className="p-6 bg-gray-100 h-full">
             <div className="mb-6 flex justify-between items-center">
                 <h1 className="text-2xl font-bold text-gray-900">スプリントボード</h1>
                 <div className="flex gap-2">

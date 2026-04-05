@@ -138,7 +138,7 @@ export function BacklogView() {
     };
 
     return (
-        <div className="flex h-full gap-6 px-6 py-2 overflow-hidden h-[calc(100vh-180px)]">
+        <div className="flex h-full gap-6 px-6 py-4 overflow-hidden">
             {/* Left: Backlog */}
             <div 
                 className="flex-[1.2] flex flex-col bg-gray-50 rounded-lg border border-gray-200 shadow-inner overflow-hidden"

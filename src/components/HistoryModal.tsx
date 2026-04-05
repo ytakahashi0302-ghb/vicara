@@ -85,14 +85,14 @@ export function HistoryModal({ isOpen, onClose }: HistoryModalProps) {
                                                     <ChevronRight size={18} className="text-gray-400" />
                                                 }
                                                 <span className="font-semibold text-gray-900">
-                                                    {formatDate(data.sprint.completed_at)}
+                                                    {data.sprint.completed_at ? formatDate(data.sprint.completed_at as number) : '未完了'}
                                                 </span>
                                             </div>
 
                                             <div className="flex items-center gap-4 text-sm text-gray-500 pl-6 sm:pl-0">
                                                 <div className="flex items-center gap-1.5 bg-gray-100 px-2.5 py-1 rounded-md">
                                                     <Clock size={14} className="text-gray-400" />
-                                                    <span>{formatDuration(data.sprint.started_at, data.sprint.completed_at)}</span>
+                                                    <span>{data.sprint.completed_at ? formatDuration(data.sprint.started_at || 0, data.sprint.completed_at || 0) : '測定中...'}</span>
                                                 </div>
                                                 <div className="flex items-center gap-1.5 font-medium">
                                                     <CheckCircle size={14} className="text-emerald-500" />
