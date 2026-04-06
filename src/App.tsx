@@ -7,8 +7,6 @@ import { ProjectSettings } from "./components/ui/ProjectSettings";
 import { InceptionDeck } from "./components/project/InceptionDeck";
 import { ScrumDashboard } from "./components/kanban/ScrumDashboard";
 import { TeamLeaderSidebar } from "./components/ai/TeamLeaderSidebar";
-import { Button } from "./components/ui/Button";
-import { useScrum } from "./context/ScrumContext";
 import { Toaster } from 'react-hot-toast';
 import { useState } from 'react';
 import { History, Bot, Settings } from 'lucide-react';
@@ -17,69 +15,6 @@ import { SprintTimer } from "./components/SprintTimer";
 import { TerminalDock } from './components/terminal/TerminalDock';
 import { GlobalSettingsModal } from './components/ui/GlobalSettingsModal';
 import "./App.css";
-
-// 開発用の初期データ投入ボタン等を含むコンポーネント（今後整理）
-function DeveloperTools() {
-  const { addStory, addTask, refresh } = useScrum();
-
-  const handleCreateMockData = async () => {
-    try {
-      console.log('Start adding mock data...');
-      const storyId = `story-${Date.now()}`;
-      await addStory({
-        id: storyId,
-        title: "As a PO, I want a Kanban board to visualize tasks",
-        description: "MVP sprint item.",
-        acceptance_criteria: "- Build UI\n- Test DnD",
-        status: "In Progress",
-        archived: false
-      });
-      console.log('Mock story added:', storyId);
-
-      await addTask({
-        id: `task-${Date.now()}-1`,
-        story_id: storyId,
-        title: "Setup DnD kit",
-        description: "Install and configure dnd-kit",
-        status: "Done",
-        archived: false
-      });
-
-      await addTask({
-        id: `task-${Date.now()}-2`,
-        story_id: storyId,
-        title: "Implement Swimlanes",
-        description: "Create horizontal layout for stories",
-        status: "In Progress",
-        archived: false
-      });
-
-      await addTask({
-        id: `task-${Date.now()}-3`,
-        story_id: storyId,
-        title: "Write documentation",
-        description: "Update README and architecture docs",
-        status: "To Do",
-        archived: false
-      });
-
-      console.log('Mock tasks added');
-      await refresh();
-      console.log('Refresh completed');
-    } catch (e) {
-      console.error('Error adding mock data:', e);
-    }
-  };
-
-  return (
-    <div className="fixed bottom-4 left-4 bg-white p-4 rounded-lg shadow-lg border border-gray-200 z-50">
-      <h3 className="text-sm font-bold mb-2">Dev Tools</h3>
-      <Button onClick={handleCreateMockData} size="sm" variant="secondary">
-        Add Mock Data
-      </Button>
-    </div>
-  );
-}
 
 function AppContent() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -211,8 +146,6 @@ function AppContent() {
           />
         </div>
       </div>
-
-      {import.meta.env.DEV && <DeveloperTools />}
 
       <HistoryModal
         isOpen={isHistoryOpen}

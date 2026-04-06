@@ -6,6 +6,7 @@ mod pty_commands;
 mod pty_manager;
 mod rig_provider;
 mod claude_runner;
+mod scaffolding;
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -142,7 +143,13 @@ pub fn run() {
             pty_commands::pty_execute,
             pty_commands::pty_kill,
             claude_runner::execute_claude_task,
-            claude_runner::kill_claude_process
+            claude_runner::kill_claude_process,
+            scaffolding::detect_tech_stack,
+            scaffolding::check_scaffold_status,
+            scaffolding::execute_scaffold_cli,
+            scaffolding::execute_scaffold_ai,
+            scaffolding::generate_agent_md,
+            scaffolding::generate_claude_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

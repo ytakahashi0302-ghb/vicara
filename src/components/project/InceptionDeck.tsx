@@ -3,6 +3,7 @@ import { useWorkspace } from '../../context/WorkspaceContext';
 import { invoke } from '@tauri-apps/api/core';
 import { load } from '@tauri-apps/plugin-store';
 import toast from 'react-hot-toast';
+import { ScaffoldingPanel } from './ScaffoldingPanel';
 
 interface ChatMessage {
     role: 'user' | 'assistant';
@@ -136,6 +137,7 @@ export function InceptionDeck() {
 
             setMessages([...newMessages, { role: 'assistant', content: response.reply }]);
 
+            // パッチがある場合はファイルに書き込み
             if (response.is_finished && response.patch_target && response.patch_content) {
                 const filename = response.patch_target; // AI が指定したファイル名を使用
 
@@ -175,19 +177,20 @@ export function InceptionDeck() {
                         }));
                     }
                 }
+            }
 
-                if (currentPhase < 5) {
-                    const nextPhase = currentPhase + 1;
-                    setCurrentPhase(nextPhase);
+            // フェーズ遷移: is_finished なら次へ（パッチ有無に関わらず）
+            if (response.is_finished && currentPhase < 5) {
+                const nextPhase = currentPhase + 1;
+                setCurrentPhase(nextPhase);
 
-                    const phaseStartMsg = "次のフェーズへ進みました。\n" +
-                        (nextPhase === 2 ? "Phase 2 (Not List): やらないことリストについて決めていきましょう。" :
-                         nextPhase === 3 ? "Phase 3 (What): 技術スタックとアーキテクチャの制約について教えてください。" :
-                         nextPhase === 4 ? "Phase 4 (How): プロジェクト固有の開発ルールやAIへの追加ルールはありますか？" :
-                         "Phase 5: 全てのドキュメントの生成が完了しました！");
+                const phaseStartMsg = "次のフェーズへ進みました。\n" +
+                    (nextPhase === 2 ? "Phase 2 (Not List): やらないことリストについて決めていきましょう。" :
+                     nextPhase === 3 ? "Phase 3 (What): 技術スタックとアーキテクチャの制約について教えてください。" :
+                     nextPhase === 4 ? "Phase 4 (How): プロジェクト固有の開発ルールやAIへの追加ルールはありますか？" :
+                     "Phase 5: 初期足場構築（Scaffolding）を開始します。");
 
-                    setMessages(prev => [...prev, { role: 'assistant', content: phaseStartMsg }]);
-                }
+                setMessages(prev => [...prev, { role: 'assistant', content: phaseStartMsg }]);
             }
         } catch (error) {
             console.error('Chat failed:', error);
@@ -215,78 +218,98 @@ export function InceptionDeck() {
 
     return (
         <div className="flex h-[calc(100vh-64px)] w-full overflow-hidden bg-white">
-            {/* Left Pane: Chat / Wizard */}
+            {/* Left Pane: Chat / Wizard or Scaffolding Panel */}
             <div className="w-1/2 flex flex-col border-r border-gray-200">
-                <div className="p-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
-                    <div>
-                        <h2 className="text-lg font-bold text-gray-800">AI Inception Deck</h2>
-                        <p className="text-sm text-gray-500">スプリント0: プロジェクトの方向性をすり合わせる</p>
-                    </div>
-                    <div className="text-sm font-medium px-3 py-1 bg-blue-100 text-blue-800 rounded-full">
-                        Phase {currentPhase} / 5
-                    </div>
-                </div>
-                
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                    {messages.map((msg, idx) => (
-                        <div key={idx} className={`p-3 rounded-lg border max-w-[85%] ${
-                            msg.role === 'user' 
-                                ? 'bg-white text-gray-800 border-gray-200 self-end ml-auto' 
-                                : 'bg-blue-50 text-blue-900 border-blue-100 self-start'
-                        }`}>
-                            <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                        </div>
-                    ))}
-                    {isProcessing && (
-                        <div className="bg-blue-50 text-blue-900 p-3 rounded-lg border border-blue-100 max-w-[85%] self-start flex items-center gap-2">
-                            <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></span>
-                            <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
-                            <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
-                        </div>
-                    )}
-                    <div ref={messagesEndRef} />
-                </div>
-
-                <div className="p-4 border-t border-gray-200 bg-white">
-                    <div className="flex flex-col gap-2">
-                        <textarea 
-                            value={inputText}
-                            onChange={(e) => setInputText(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && e.metaKey) handleSendMessage();
-                            }}
-                            disabled={isProcessing || currentPhase === 5}
-                            className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none h-20"
-                            placeholder="AIへの指示を入力... (Cmd+Enterで送信)"
+                {currentPhase === 5 ? (
+                    /* Phase 5: Scaffolding Panel */
+                    <>
+                        <ScaffoldingPanel
+                            localPath={currentProject.local_path}
+                            projectName={currentProject.name}
                         />
-                        <div className="flex justify-between items-center">
-                            <span className="text-xs text-gray-400">Cmd+Enterで送信</span>
-                            <button 
-                                onClick={handleSendMessage}
-                                disabled={isProcessing || !inputText.trim() || currentPhase === 5}
-                                className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        <div className="p-3 border-t border-gray-200 bg-white">
+                            <button
+                                onClick={() => setCurrentPhase(4)}
+                                className="text-sm text-gray-600 hover:text-gray-900 px-3 py-1 rounded hover:bg-gray-100"
                             >
-                                {isProcessing ? '処理中...' : '送信'}
+                                ← 前のフェーズに戻る
                             </button>
                         </div>
-                    </div>
-                    <div className="mt-4 flex justify-between items-center border-t border-gray-100 pt-3">
-                        <button 
-                            disabled={currentPhase === 1}
-                            onClick={() => setCurrentPhase(p => Math.max(1, p - 1))}
-                            className="text-sm text-gray-600 hover:text-gray-900 px-3 py-1 rounded hover:bg-gray-100 disabled:opacity-50"
-                        >
-                            ← 前のフェーズ
-                        </button>
-                        <button 
-                            disabled={currentPhase === 5}
-                            onClick={() => setCurrentPhase(p => Math.min(5, p + 1))}
-                            className="text-sm text-gray-600 hover:text-gray-900 px-3 py-1 rounded hover:bg-gray-100 disabled:opacity-50"
-                        >
-                            次のフェーズへスキップ →
-                        </button>
-                    </div>
-                </div>
+                    </>
+                ) : (
+                    /* Phase 1-4: Chat Wizard */
+                    <>
+                        <div className="p-4 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+                            <div>
+                                <h2 className="text-lg font-bold text-gray-800">AI Inception Deck</h2>
+                                <p className="text-sm text-gray-500">スプリント0: プロジェクトの方向性をすり合わせる</p>
+                            </div>
+                            <div className="text-sm font-medium px-3 py-1 bg-blue-100 text-blue-800 rounded-full">
+                                Phase {currentPhase} / 5
+                            </div>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                            {messages.map((msg, idx) => (
+                                <div key={idx} className={`p-3 rounded-lg border max-w-[85%] ${
+                                    msg.role === 'user'
+                                        ? 'bg-white text-gray-800 border-gray-200 self-end ml-auto'
+                                        : 'bg-blue-50 text-blue-900 border-blue-100 self-start'
+                                }`}>
+                                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                                </div>
+                            ))}
+                            {isProcessing && (
+                                <div className="bg-blue-50 text-blue-900 p-3 rounded-lg border border-blue-100 max-w-[85%] self-start flex items-center gap-2">
+                                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></span>
+                                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></span>
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        <div className="p-4 border-t border-gray-200 bg-white">
+                            <div className="flex flex-col gap-2">
+                                <textarea
+                                    value={inputText}
+                                    onChange={(e) => setInputText(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && e.metaKey) handleSendMessage();
+                                    }}
+                                    disabled={isProcessing}
+                                    className="w-full border border-gray-300 rounded-md p-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none resize-none h-20"
+                                    placeholder="AIへの指示を入力... (Cmd+Enterで送信)"
+                                />
+                                <div className="flex justify-between items-center">
+                                    <span className="text-xs text-gray-400">Cmd+Enterで送信</span>
+                                    <button
+                                        onClick={handleSendMessage}
+                                        disabled={isProcessing || !inputText.trim()}
+                                        className="px-6 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {isProcessing ? '処理中...' : '送信'}
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="mt-4 flex justify-between items-center border-t border-gray-100 pt-3">
+                                <button
+                                    disabled={currentPhase === 1}
+                                    onClick={() => setCurrentPhase(p => Math.max(1, p - 1))}
+                                    className="text-sm text-gray-600 hover:text-gray-900 px-3 py-1 rounded hover:bg-gray-100 disabled:opacity-50"
+                                >
+                                    ← 前のフェーズ
+                                </button>
+                                <button
+                                    onClick={() => setCurrentPhase(p => Math.min(5, p + 1))}
+                                    className="text-sm text-gray-600 hover:text-gray-900 px-3 py-1 rounded hover:bg-gray-100"
+                                >
+                                    次のフェーズへスキップ →
+                                </button>
+                            </div>
+                        </div>
+                    </>
+                )}
             </div>
 
             {/* Right Pane: Live Document / Tabs */}

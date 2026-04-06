@@ -1,15 +1,46 @@
 import { useState } from 'react';
 import { useWorkspace } from '../../context/WorkspaceContext';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Folder, FolderOpen, AlertCircle } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { Folder, FolderOpen, AlertCircle, Hammer } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-export function ProjectSettings() {
+interface ProjectSettingsProps {
+    onOpenScaffolding?: () => void;
+}
+
+export function ProjectSettings({ onOpenScaffolding }: ProjectSettingsProps) {
     const { projects, currentProjectId, updateProjectPath } = useWorkspace();
     const currentProject = projects.find(p => p.id === currentProjectId);
     const [isSelecting, setIsSelecting] = useState(false);
 
     if (!currentProject) return null;
+
+    const handleScaffolding = async () => {
+        if (!currentProject.local_path) {
+            toast.error('先にローカルディレクトリを設定してください');
+            return;
+        }
+        if (onOpenScaffolding) {
+            onOpenScaffolding();
+        } else {
+            // フォールバック: AGENT.md + .claude/settings.json のみ生成
+            try {
+                await Promise.all([
+                    invoke<string>('generate_agent_md', {
+                        localPath: currentProject.local_path,
+                        projectName: currentProject.name,
+                    }),
+                    invoke<void>('generate_claude_settings', {
+                        localPath: currentProject.local_path,
+                    }),
+                ]);
+                toast.success('AGENT.md と .claude/settings.json を生成しました');
+            } catch (error) {
+                toast.error(`生成失敗: ${error}`);
+            }
+        }
+    };
 
     const handleSelectFolder = async () => {
         setIsSelecting(true);
@@ -38,7 +69,7 @@ export function ProjectSettings() {
     };
 
     return (
-        <div className="flex items-center ml-4">
+        <div className="flex items-center ml-4 gap-1">
             <button
                 onClick={handleSelectFolder}
                 disabled={isSelecting}
@@ -64,6 +95,15 @@ export function ProjectSettings() {
                     </>
                 )}
             </button>
+            {currentProject.local_path && (
+                <button
+                    onClick={handleScaffolding}
+                    className="flex items-center gap-1 px-2 py-1.5 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md hover:bg-indigo-100 transition-colors"
+                    title="Scaffolding: AGENT.md と .claude/settings.json を生成"
+                >
+                    <Hammer size={14} />
+                </button>
+            )}
         </div>
     );
 }

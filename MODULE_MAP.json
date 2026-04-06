@@ -1,0 +1,45 @@
+{
+  "frontend-core": {
+    "paths": [
+      "src/components/ui/**",
+      "src/context/**",
+      "src/hooks/**",
+      "src/types/**",
+      "src/App.tsx",
+      "src/main.tsx"
+    ],
+    "description": "【ベースライン】共通UI, Context, hooks, 型定義。フロントエンドのタスクでは型エラーを防ぐため必ず参照すること。"
+  },
+  "frontend-kanban": {
+    "paths": [
+      "src/components/kanban/**",
+      "src/components/board/**"
+    ],
+    "description": "Kanbanボード関連のUI。カンバンやスプリントのタスクに直接関係する修正の場合のみ参照すること。"
+  },
+  "frontend-terminal": {
+    "paths": [
+      "src/components/terminal/**"
+    ],
+    "description": "ターミナルDock UI専用。ターミナル機能に修正を加える場合のみピンポイントで参照すること。"
+  },
+  "frontend-ai": {
+    "paths": [
+      "src/components/ai/**",
+      "src/components/project/**"
+    ],
+    "description": "Team LeaderサイドバーやAI機能専用。AIエージェント側のUIを触る場合のみ参照すること。"
+  },
+  "backend": {
+    "paths": [
+      "src-tauri/src/**"
+    ],
+    "description": "Tauri バックエンド（Rust）。バックエンドのロジックやIPCコマンドの実装・修正が必要な場合のみ参照すること。フロントエンドのみのタスクでは無視すること。"
+  },
+  "docs": {
+    "paths": [
+      "docs/**"
+    ],
+    "description": "機能別ドキュメント。実装方法ではなく、新機能の仕様や背景を理解する必要がある場合のみ参照すること。"
+  }
+}
