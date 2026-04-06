@@ -96,15 +96,20 @@ pub async fn execute_claude_task(
         .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    // コマンド構築: Windows は cmd.exe /C 経由、Unix は直接 claude
+    // コマンド構築:
+    // プロンプトは一時ファイルからシェルパイプで stdin に流し込む。
+    // claude -p (print mode) は引数にプロンプトがない場合 stdin から読む。
+    // PTY は stdout 側で TTY 検出を提供し、ANSI カラー出力を維持する。
+    //
+    // Windows: cmd.exe /C "type <file> | claude -p ..."
+    // Unix:    sh -c "cat <file> | claude -p ..."
     #[cfg(target_os = "windows")]
     let mut cmd = {
         let mut c = CommandBuilder::new("cmd.exe");
         c.args([
-            "/C", "claude",
-            "--file", &prompt_file_str,
+            "/C", "type", &prompt_file_str,
+            "|", "claude", "-p",
             "--permission-mode", "bypassPermissions",
-            "--add-dir", &cwd,
             "--verbose",
         ]);
         c
@@ -112,13 +117,12 @@ pub async fn execute_claude_task(
 
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
-        let mut c = CommandBuilder::new("claude");
-        c.args([
-            "--file", &prompt_file_str,
-            "--permission-mode", "bypassPermissions",
-            "--add-dir", &cwd,
-            "--verbose",
-        ]);
+        let shell_cmd = format!(
+            "cat '{}' | claude -p --permission-mode bypassPermissions --verbose",
+            prompt_file_str
+        );
+        let mut c = CommandBuilder::new("sh");
+        c.args(["-c", &shell_cmd]);
         c
     };
 
