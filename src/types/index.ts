@@ -57,3 +57,16 @@ export interface TeamChatMessage {
     content: string;
     created_at: string;
 }
+
+export interface TeamRoleSetting {
+    id: string;
+    name: string;
+    system_prompt: string;
+    model: string;
+    sort_order: number;
+}
+
+export interface TeamConfiguration {
+    max_concurrent_agents: number;
+    roles: TeamRoleSetting[];
+}

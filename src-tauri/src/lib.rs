@@ -1,11 +1,11 @@
 mod ai;
 mod ai_tools;
+mod claude_runner;
 mod db;
 mod inception;
 mod pty_commands;
 mod pty_manager;
 mod rig_provider;
-mod claude_runner;
 mod scaffolding;
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
@@ -83,7 +83,13 @@ pub fn run() {
             description: "priority_column_to_integer",
             sql: include_str!("../migrations/11_priority_column_to_integer.sql"),
             kind: MigrationKind::Up,
-        }
+        },
+        Migration {
+            version: 12,
+            description: "team_configuration",
+            sql: include_str!("../migrations/12_team_configuration.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -108,8 +114,7 @@ pub fn run() {
             let cleanup_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 use tauri::Manager;
-                let mut interval =
-                    tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
                 interval.tick().await; // skip immediate first tick
                 loop {
                     interval.tick().await;
@@ -155,6 +160,8 @@ pub fn run() {
             db::get_team_chat_messages,
             db::add_team_chat_message,
             db::clear_team_chat_messages,
+            db::get_team_configuration,
+            db::save_team_configuration,
             ai::chat_with_team_leader,
             rig_provider::get_available_models,
             pty_commands::pty_spawn,

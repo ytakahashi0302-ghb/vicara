@@ -103,17 +103,18 @@ fn detect_stack_from_content(content: &str) -> TechStackInfo {
         None
     };
 
-    let meta_framework = if lower.contains("next.js") || lower.contains("nextjs") || lower.contains("next js") {
-        Some("Next.js".to_string())
-    } else if lower.contains("nuxt") {
-        Some("Nuxt".to_string())
-    } else if lower.contains("vite") {
-        Some("Vite".to_string())
-    } else if lower.contains("tauri") {
-        Some("Tauri".to_string())
-    } else {
-        None
-    };
+    let meta_framework =
+        if lower.contains("next.js") || lower.contains("nextjs") || lower.contains("next js") {
+            Some("Next.js".to_string())
+        } else if lower.contains("nuxt") {
+            Some("Nuxt".to_string())
+        } else if lower.contains("vite") {
+            Some("Vite".to_string())
+        } else if lower.contains("tauri") {
+            Some("Tauri".to_string())
+        } else {
+            None
+        };
 
     TechStackInfo {
         language,
@@ -142,7 +143,11 @@ fn determine_strategy(stack: &TechStackInfo) -> ScaffoldStrategy {
             "Nuxt" => {
                 return ScaffoldStrategy::CliScaffold {
                     command: "npx".to_string(),
-                    args: vec!["nuxi@latest".to_string(), "init".to_string(), ".".to_string()],
+                    args: vec![
+                        "nuxi@latest".to_string(),
+                        "init".to_string(),
+                        ".".to_string(),
+                    ],
                 };
             }
             "Vite" => {
@@ -164,10 +169,7 @@ fn determine_strategy(stack: &TechStackInfo) -> ScaffoldStrategy {
             "Tauri" => {
                 return ScaffoldStrategy::CliScaffold {
                     command: "npx".to_string(),
-                    args: vec![
-                        "create-tauri-app@latest".to_string(),
-                        ".".to_string(),
-                    ],
+                    args: vec!["create-tauri-app@latest".to_string(), ".".to_string()],
                 };
             }
             _ => {}
@@ -269,7 +271,10 @@ pub async fn detect_tech_stack(local_path: String) -> Result<TechStackDetection,
     let arch_path = p.join("ARCHITECTURE.md");
 
     if !arch_path.exists() {
-        return Err("ARCHITECTURE.md が見つかりません。先にインセプションデッキを完了してください。".to_string());
+        return Err(
+            "ARCHITECTURE.md が見つかりません。先にインセプションデッキを完了してください。"
+                .to_string(),
+        );
     }
 
     let content = std::fs::read_to_string(&arch_path).map_err(|e| e.to_string())?;
@@ -428,10 +433,7 @@ pub async fn execute_scaffold_ai(
 /// Inception ファイルの内容はコピーせず、リンクのみ配置する。
 /// ディレクトリ構造ガイドは Rust の std::fs で自前生成する（Windows tree コマンドの文字化け回避）。
 #[tauri::command]
-pub async fn generate_agent_md(
-    local_path: String,
-    project_name: String,
-) -> Result<String, String> {
+pub async fn generate_agent_md(local_path: String, project_name: String) -> Result<String, String> {
     let p = Path::new(&local_path);
     if !p.exists() || !p.is_dir() {
         return Err("ディレクトリが存在しません。".to_string());
@@ -474,7 +476,14 @@ pub async fn generate_claude_settings(local_path: String) -> Result<(), String> 
 // ---------------------------------------------------------------------------
 
 /// 除外するディレクトリ名
-const IGNORED_DIRS: &[&str] = &["node_modules", ".git", "target", "dist", ".next", "__pycache__"];
+const IGNORED_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    ".next",
+    "__pycache__",
+];
 
 /// std::fs でディレクトリツリーを生成する（文字化けしない）。
 fn build_directory_tree(root: &Path, max_depth: usize) -> String {
@@ -504,7 +513,9 @@ fn collect_tree_entries(
     entries.sort_by(|a, b| {
         let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let b_is_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        b_is_dir.cmp(&a_is_dir).then_with(|| a.file_name().cmp(&b.file_name()))
+        b_is_dir
+            .cmp(&a_is_dir)
+            .then_with(|| a.file_name().cmp(&b.file_name()))
     });
 
     // 除外フィルタ
@@ -523,11 +534,7 @@ fn collect_tree_entries(
         let connector = if is_last { "`-- " } else { "|-- " };
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
 
-        let display_name = if is_dir {
-            format!("{}/", name)
-        } else {
-            name
-        };
+        let display_name = if is_dir { format!("{}/", name) } else { name };
 
         lines.push(format!("{}{}{}", prefix, connector, display_name));
 
@@ -537,7 +544,13 @@ fn collect_tree_entries(
             } else {
                 format!("{}|   ", prefix)
             };
-            collect_tree_entries(&entry.path(), &child_prefix, max_depth, current_depth + 1, lines);
+            collect_tree_entries(
+                &entry.path(),
+                &child_prefix,
+                max_depth,
+                current_depth + 1,
+                lines,
+            );
         }
     }
 }

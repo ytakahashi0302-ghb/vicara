@@ -39,7 +39,10 @@ struct ProjectBacklogCounts {
     dependencies: i64,
 }
 
-async fn get_project_backlog_counts(app: &AppHandle, project_id: &str) -> Result<ProjectBacklogCounts, String> {
+async fn get_project_backlog_counts(
+    app: &AppHandle,
+    project_id: &str,
+) -> Result<ProjectBacklogCounts, String> {
     let stories = crate::db::select_query::<(i64,)>(
         app,
         "SELECT COUNT(*) as count FROM stories WHERE project_id = ?",
@@ -79,7 +82,7 @@ async fn get_project_backlog_counts(app: &AppHandle, project_id: &str) -> Result
 
 impl Tool for CreateStoryAndTasksTool {
     const NAME: &'static str = "create_story_and_tasks";
-    
+
     type Error = CustomToolError;
     type Args = CreateStoryAndTasksArgs;
     type Output = String;
@@ -161,7 +164,10 @@ impl Tool for CreateStoryAndTasksTool {
 
         let story_draft = StoryDraftInput {
             target_story_id: args.target_story_id.clone(),
-            title: args.story_title.clone().unwrap_or_else(|| "Untitled Story".to_string()),
+            title: args
+                .story_title
+                .clone()
+                .unwrap_or_else(|| "Untitled Story".to_string()),
             description: args.story_description.clone(),
             acceptance_criteria: args.acceptance_criteria.clone(),
             priority: args.story_priority.clone(),
@@ -186,18 +192,22 @@ impl Tool for CreateStoryAndTasksTool {
                 let target_msg = if let Some(id) = args.target_story_id {
                     format!("既存のストーリー(ID: {})", id)
                 } else {
-                    format!("新規ストーリー「{}」(ID: {})", args.story_title.unwrap_or_default(), story_id)
+                    format!(
+                        "新規ストーリー「{}」(ID: {})",
+                        args.story_title.unwrap_or_default(),
+                        story_id
+                    )
                 };
 
                 Ok(format!(
                     "正常に{}へ反映しました。追加結果: stories +{}, tasks +{}, dependencies +{}。この結果だけを根拠にユーザーへ報告してください。",
                     target_msg, added_stories, added_tasks, added_dependencies
                 ))
-            },
+            }
             Err(e) => {
                 eprintln!("CreateStoryAndTasksTool Execution Error: {:?}", e);
                 Err(CustomToolError(e))
-            },
+            }
         }
     }
 }

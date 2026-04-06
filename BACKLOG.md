@@ -32,3 +32,6 @@
 - [ ] **ペインのリサイズ機能**: 左ペイン・右ペイン間、および左ペイン上下の境界線をドラッグでリサイズできる機能（`react-split`などの導入を検討）。
 - [ ] **Terminal DockのトグルボタンのUI改善**: クリック領域の拡大、アイコンの視認性向上。
 - [ ] **Claude CLI「緊急停止」ボタンの表示制御改善**: Windows環境における標準出力のバッファリングや、フロントエンドでの状態管理不備（出力を受信するまでボタンが表示されない）により、停止ボタンが一瞬しか表示されない問題がある。実行開始直後から明示的にボタンを表示し、実行状態を正確に反映させる仕組みを検討・実装する。
+
+## コード品質 & CI/CD
+- [ ] **npm run lint エラーの解消 (ScaffoldingPanel.tsx)**: `src/components/project/ScaffoldingPanel.tsx` において、`const` で定義された `handlePostScaffold` 関数が定義より前で使用（`useEffect` 内）されているため、Lint 実行時にエラー（Cannot access variable before it is declared）が発生し、ビルド（Lint）が失敗する。関数定義を `useEffect` 前に移動するか、`function` 宣言への変更によって修正する。併せて、各ファイルに散見される `exhaustive-deps` 警告や `any` 型の整理も検討する。

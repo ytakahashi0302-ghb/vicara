@@ -34,7 +34,7 @@ pub struct RefinedIdeaResponse {
 pub struct ChatInceptionResponse {
     pub reply: String,
     pub is_finished: bool,
-    pub patch_target: Option<String>,  // 書き込み先ファイル名 (e.g. "PRODUCT_CONTEXT.md")
+    pub patch_target: Option<String>, // 書き込み先ファイル名 (e.g. "PRODUCT_CONTEXT.md")
     pub patch_content: Option<String>, // 書き込む内容（そのフェーズの差分のみ）
 }
 
@@ -56,7 +56,10 @@ struct ProjectBacklogCounts {
     dependencies: i64,
 }
 
-async fn get_project_backlog_counts(app: &AppHandle, project_id: &str) -> Result<ProjectBacklogCounts, String> {
+async fn get_project_backlog_counts(
+    app: &AppHandle,
+    project_id: &str,
+) -> Result<ProjectBacklogCounts, String> {
     let stories = crate::db::select_query::<(i64,)>(
         app,
         "SELECT COUNT(*) as count FROM stories WHERE project_id = ?",
@@ -96,12 +99,22 @@ async fn get_project_backlog_counts(app: &AppHandle, project_id: &str) -> Result
 
 fn looks_like_backlog_mutation_request(message: &str) -> bool {
     let normalized = message.to_lowercase();
-    let has_action = ["追加", "作成", "登録", "生成", "append", "create", "add", "register"]
-        .iter()
-        .any(|keyword| normalized.contains(keyword));
-    let has_target = ["バックログ", "ストーリー", "story", "stories", "タスク", "task", "tasks"]
-        .iter()
-        .any(|keyword| normalized.contains(keyword));
+    let has_action = [
+        "追加", "作成", "登録", "生成", "append", "create", "add", "register",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword));
+    let has_target = [
+        "バックログ",
+        "ストーリー",
+        "story",
+        "stories",
+        "タスク",
+        "task",
+        "tasks",
+    ]
+    .iter()
+    .any(|keyword| normalized.contains(keyword));
 
     has_action && has_target
 }
@@ -169,7 +182,9 @@ async fn execute_fallback_team_leader_plan(
     let after_counts = get_project_backlog_counts(app, project_id).await?;
     let added_stories = after_counts.stories.saturating_sub(before_counts.stories);
     let added_tasks = after_counts.tasks.saturating_sub(before_counts.tasks);
-    let added_dependencies = after_counts.dependencies.saturating_sub(before_counts.dependencies);
+    let added_dependencies = after_counts
+        .dependencies
+        .saturating_sub(before_counts.dependencies);
 
     if added_stories == 0 && added_tasks == 0 && added_dependencies == 0 {
         return Ok(None);
@@ -177,7 +192,9 @@ async fn execute_fallback_team_leader_plan(
 
     let _ = app.emit("kanban-updated", ());
 
-    let reply_prefix = plan.reply.unwrap_or_else(|| "バックログ登録を実行しました。".to_string());
+    let reply_prefix = plan
+        .reply
+        .unwrap_or_else(|| "バックログ登録を実行しました。".to_string());
     Ok(Some(ChatTaskResponse {
         reply: format!(
             "{}\n\n追加結果: stories +{}, tasks +{}, dependencies +{}",
@@ -195,9 +212,15 @@ pub async fn generate_tasks_from_story(
     provider: String,
     project_id: String,
 ) -> Result<Vec<GeneratedTask>, String> {
-    let (provider_enum, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, Some(provider)).await?;
-    let _context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
-    let prompt = format!("Context: {}\nStory: {}\nDesc: {}\nAC: {}\nJSON Array Output Please.", _context_md, title, description, acceptance_criteria);
+    let (provider_enum, api_key, model) =
+        crate::rig_provider::resolve_provider_and_key(&app, Some(provider)).await?;
+    let _context_md = crate::db::build_project_context(&app, &project_id)
+        .await
+        .unwrap_or_default();
+    let prompt = format!(
+        "Context: {}\nStory: {}\nDesc: {}\nAC: {}\nJSON Array Output Please.",
+        _context_md, title, description, acceptance_criteria
+    );
 
     let system_prompt = r#"You are a task decomposition expert for agile software development.
 Given a user story, generate a JSON array of subtasks. Each task object must include:
@@ -230,7 +253,10 @@ Output ONLY a valid JSON array, no explanation or markdown."#;
     .await?;
 
     let re = regex::Regex::new(r"(?s)\[.*?\]").map_err(|e| e.to_string())?;
-    let json_str = re.captures(&response).and_then(|caps| caps.get(0)).map_or(response.as_str(), |m| m.as_str());
+    let json_str = re
+        .captures(&response)
+        .and_then(|caps| caps.get(0))
+        .map_or(response.as_str(), |m| m.as_str());
     serde_json::from_str(json_str).map_err(|e| e.to_string())
 }
 
@@ -241,8 +267,11 @@ pub async fn refine_idea(
     previous_context: Option<Vec<Message>>,
     project_id: String,
 ) -> Result<RefinedIdeaResponse, String> {
-    let (provider, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
-    let _context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
+    let (provider, api_key, model) =
+        crate::rig_provider::resolve_provider_and_key(&app, None).await?;
+    let _context_md = crate::db::build_project_context(&app, &project_id)
+        .await
+        .unwrap_or_default();
 
     let chat_history = if let Some(ctx) = previous_context {
         crate::rig_provider::convert_messages(&ctx)
@@ -262,7 +291,10 @@ pub async fn refine_idea(
     .await?;
 
     let re = regex::Regex::new(r"(?s)\{.*?\}").unwrap();
-    let json_str = re.captures(&content).and_then(|caps| caps.get(0)).map_or(content.as_str(), |m| m.as_str());
+    let json_str = re
+        .captures(&content)
+        .and_then(|caps| caps.get(0))
+        .map_or(content.as_str(), |m| m.as_str());
     serde_json::from_str(json_str).map_err(|e| e.to_string())
 }
 
@@ -272,7 +304,8 @@ pub async fn refine_idea(
 // ---------------------------------------------------------------------------
 fn build_inception_system_prompt(phase: u32, context_md: &str) -> String {
     let phase_instruction = match phase {
-        1 => r#"## Phase 1: コア価値とターゲット (Why)
+        1 => {
+            r#"## Phase 1: コア価値とターゲット (Why)
 
 **ヒアリング目標** (2〜3往復で引き出す):
 - 解決したい課題 / ターゲットユーザー / コアバリュー / プロダクトの目的
@@ -294,9 +327,11 @@ fn build_inception_system_prompt(phase: u32, context_md: &str) -> String {
 ## 2. 役割分担
 - 人間(PO): What の意思決定のみ
 - AI: How の実行（タスク分解・実装・改善）
-```"#,
+```"#
+        }
 
-        2 => r#"## Phase 2: やらないことリスト (Not List)
+        2 => {
+            r#"## Phase 2: やらないことリスト (Not List)
 
 **ヒアリング目標** (2〜3往復):
 - スコープ外にすること / 絶対やってはならないこと
@@ -314,9 +349,11 @@ fn build_inception_system_prompt(phase: u32, context_md: &str) -> String {
 ## 5. コンテキスト管理
 - Layer 1 (本ファイル + Rule.md): 不変のコア原則
 - Layer 2 (handoff.md): スプリントごとの揮発性コンテキスト
-```"#,
+```"#
+        }
 
-        3 => r#"## Phase 3: 技術スタック・アーキテクチャ (What)
+        3 => {
+            r#"## Phase 3: 技術スタック・アーキテクチャ (What)
 
 **ヒアリング目標** (2〜3往復):
 - 言語 / FW / DB / アーキテクチャ上の制約
@@ -338,9 +375,11 @@ fn build_inception_system_prompt(phase: u32, context_md: &str) -> String {
 
 ## 設計の制約
 - {注意点}
-```"#,
+```"#
+        }
 
-        4 => r#"## Phase 4: 開発ルール・AIルール (How)
+        4 => {
+            r#"## Phase 4: 開発ルール・AIルール (How)
 
 **ヒアリング目標** (1〜2往復):
 - このプロダクト固有のコーディング規約 / AIへの特別指示
@@ -356,7 +395,8 @@ fn build_inception_system_prompt(phase: u32, context_md: &str) -> String {
 
 ### AIへの追加指示
 - {追加ルール1}
-```"#,
+```"#
+        }
 
         _ => "全フェーズ完了。ユーザーにお祝いの言葉を伝えてください。",
     };
@@ -366,8 +406,15 @@ fn build_inception_system_prompt(phase: u32, context_md: &str) -> String {
         "（生成済みドキュメントなし）".to_string()
     } else {
         let preview: String = context_md.chars().take(400).collect();
-        let suffix = if context_md.chars().count() > 400 { "...(省略)" } else { "" };
-        format!("【既存ドキュメント概要（参考のみ・このフェーズ以外の内容を再出力しないこと）】\n{}{}", preview, suffix)
+        let suffix = if context_md.chars().count() > 400 {
+            "...(省略)"
+        } else {
+            ""
+        };
+        format!(
+            "【既存ドキュメント概要（参考のみ・このフェーズ以外の内容を再出力しないこと）】\n{}{}",
+            preview, suffix
+        )
     };
 
     format!(
@@ -412,8 +459,11 @@ pub async fn chat_inception(
     phase: u32,
     messages_history: Vec<Message>,
 ) -> Result<ChatInceptionResponse, String> {
-    let (provider, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
-    let context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
+    let (provider, api_key, model) =
+        crate::rig_provider::resolve_provider_and_key(&app, None).await?;
+    let context_md = crate::db::build_project_context(&app, &project_id)
+        .await
+        .unwrap_or_default();
 
     let chat_history = crate::rig_provider::convert_messages(&messages_history);
     let system_prompt = build_inception_system_prompt(phase, &context_md);
@@ -465,8 +515,11 @@ pub async fn chat_with_team_leader(
     project_id: String,
     messages_history: Vec<Message>,
 ) -> Result<ChatTaskResponse, String> {
-    let (provider, api_key, model) = crate::rig_provider::resolve_provider_and_key(&app, None).await?;
-    let _context_md = crate::db::build_project_context(&app, &project_id).await.unwrap_or_default();
+    let (provider, api_key, model) =
+        crate::rig_provider::resolve_provider_and_key(&app, None).await?;
+    let _context_md = crate::db::build_project_context(&app, &project_id)
+        .await
+        .unwrap_or_default();
     let before_counts = get_project_backlog_counts(&app, &project_id).await?;
     let latest_user_index = messages_history
         .iter()
@@ -513,7 +566,8 @@ pub async fn chat_with_team_leader(
             &latest_user_message,
             before_counts,
         )
-        .await? {
+        .await?
+        {
             return Ok(fallback_response);
         }
 
@@ -531,9 +585,7 @@ pub async fn chat_with_team_leader(
 
     let resp: ChatTaskResponse = match serde_json::from_str(json_str) {
         Ok(r) => r,
-        Err(_) => ChatTaskResponse {
-            reply: raw_text,
-        },
+        Err(_) => ChatTaskResponse { reply: raw_text },
     };
 
     Ok(resp)

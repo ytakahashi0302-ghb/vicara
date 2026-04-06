@@ -319,10 +319,7 @@ impl PtyManager {
         session_id: &str,
         command: &str,
     ) -> Result<ExecutionResult, String> {
-        let sentinel = format!(
-            "__DONE_{}__",
-            Uuid::new_v4().to_string().replace('-', "")
-        );
+        let sentinel = format!("__DONE_{}__", Uuid::new_v4().to_string().replace('-', ""));
         let full_command = build_sentinel_command(command, &sentinel);
 
         let reader_arc = {
@@ -346,9 +343,7 @@ impl PtyManager {
         let sentinel_clone = sentinel.clone();
         let read_result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            tokio::task::spawn_blocking(move || {
-                read_until_sentinel(reader_arc, &sentinel_clone)
-            }),
+            tokio::task::spawn_blocking(move || read_until_sentinel(reader_arc, &sentinel_clone)),
         )
         .await;
 
@@ -492,7 +487,11 @@ mod tests {
             .execute_command(&id, "nonexistent_cmd_xyz_12345")
             .await
             .expect("execute_command itself should not err");
-        assert_ne!(fail.exit_code, 0, "bad cmd should exit non-0, got: {:?}", fail);
+        assert_ne!(
+            fail.exit_code, 0,
+            "bad cmd should exit non-0, got: {:?}",
+            fail
+        );
 
         mgr.kill_session(&id).await.expect("kill_session failed");
     }

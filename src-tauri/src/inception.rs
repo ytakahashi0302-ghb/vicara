@@ -16,7 +16,7 @@ pub async fn generate_base_rule(_app: AppHandle, local_path: String) -> Result<b
     if !p.exists() || !p.is_dir() {
         return Err("Directory does not exist".to_string());
     }
-    
+
     let rule_path = p.join("Rule.md");
     if !rule_path.exists() {
         std::fs::write(&rule_path, BASE_RULE_CONTENT).map_err(|e| e.to_string())?;
@@ -25,7 +25,11 @@ pub async fn generate_base_rule(_app: AppHandle, local_path: String) -> Result<b
 }
 
 #[tauri::command]
-pub async fn read_inception_file(_app: AppHandle, local_path: String, filename: String) -> Result<Option<String>, String> {
+pub async fn read_inception_file(
+    _app: AppHandle,
+    local_path: String,
+    filename: String,
+) -> Result<Option<String>, String> {
     let p = Path::new(&local_path);
     let file_path = p.join(filename);
     if file_path.exists() {
@@ -37,12 +41,18 @@ pub async fn read_inception_file(_app: AppHandle, local_path: String, filename: 
 }
 
 #[tauri::command]
-pub async fn write_inception_file(_app: AppHandle, local_path: String, filename: String, content: String, append: bool) -> Result<bool, String> {
+pub async fn write_inception_file(
+    _app: AppHandle,
+    local_path: String,
+    filename: String,
+    content: String,
+    append: bool,
+) -> Result<bool, String> {
     let p = Path::new(&local_path);
     if !p.exists() || !p.is_dir() {
         return Err("Directory does not exist".to_string());
     }
-    
+
     let file_path = p.join(filename);
     if append {
         use std::io::Write;
@@ -52,7 +62,8 @@ pub async fn write_inception_file(_app: AppHandle, local_path: String, filename:
             .open(&file_path)
             .map_err(|e| e.to_string())?;
         file.write_all(b"\n").map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| e.to_string())?;
     } else {
         std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
     }

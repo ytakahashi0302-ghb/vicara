@@ -38,7 +38,9 @@ impl ProcessKiller for StdChildKiller {
 
 // --- Unix: portable-pty の PtyChild ラッパー ---
 #[cfg(not(target_os = "windows"))]
-use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize, SlavePty};
+use portable_pty::{
+    native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize, SlavePty,
+};
 
 #[cfg(not(target_os = "windows"))]
 struct PtyChildKiller {
@@ -151,10 +153,13 @@ fn spawn_claude_process(
                     }
                     Ok(n) => {
                         let output = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = app_out.emit("claude_cli_output", ClaudeOutputPayload {
-                            task_id: tid_out.clone(),
-                            output,
-                        });
+                        let _ = app_out.emit(
+                            "claude_cli_output",
+                            ClaudeOutputPayload {
+                                task_id: tid_out.clone(),
+                                output,
+                            },
+                        );
                     }
                     Err(e) => {
                         log::warn!("stdout reader: error for task {}: {}", tid_out, e);
@@ -176,10 +181,13 @@ fn spawn_claude_process(
                     Ok(0) => break,
                     Ok(n) => {
                         let output = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = app_err.emit("claude_cli_output", ClaudeOutputPayload {
-                            task_id: tid_err.clone(),
-                            output,
-                        });
+                        let _ = app_err.emit(
+                            "claude_cli_output",
+                            ClaudeOutputPayload {
+                                task_id: tid_err.clone(),
+                                output,
+                            },
+                        );
                     }
                     Err(_) => break,
                 }
@@ -198,15 +206,18 @@ fn spawn_claude_process(
         let mut guard = session_wait.lock().unwrap();
         if let Some(mut session) = guard.take() {
             let success = session.killer.wait_success();
-            let _ = app_wait.emit("claude_cli_exit", ClaudeExitPayload {
-                task_id: tid_wait,
-                success,
-                reason: if success {
-                    "Completed successfully".into()
-                } else {
-                    "Process exited with error".into()
+            let _ = app_wait.emit(
+                "claude_cli_exit",
+                ClaudeExitPayload {
+                    task_id: tid_wait,
+                    success,
+                    reason: if success {
+                        "Completed successfully".into()
+                    } else {
+                        "Process exited with error".into()
+                    },
                 },
-            });
+            );
         }
     });
 
@@ -228,14 +239,22 @@ fn spawn_claude_process(
 ) -> Result<(), String> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
     let mut cmd = CommandBuilder::new("claude");
     cmd.args([
-        "-p", &prompt,
-        "--permission-mode", "bypassPermissions",
-        "--add-dir", &cwd,
+        "-p",
+        &prompt,
+        "--permission-mode",
+        "bypassPermissions",
+        "--add-dir",
+        &cwd,
         "--verbose",
     ]);
     cmd.cwd(&cwd);
@@ -278,10 +297,13 @@ fn spawn_claude_process(
                 }
                 Ok(n) => {
                     let output = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_clone.emit("claude_cli_output", ClaudeOutputPayload {
-                        task_id: tid_clone.clone(),
-                        output,
-                    });
+                    let _ = app_clone.emit(
+                        "claude_cli_output",
+                        ClaudeOutputPayload {
+                            task_id: tid_clone.clone(),
+                            output,
+                        },
+                    );
                 }
                 Err(e) => {
                     log::warn!("PTY reader: error for task {}: {}", tid_clone, e);
@@ -295,15 +317,18 @@ fn spawn_claude_process(
         let mut guard = session_wait.lock().unwrap();
         if let Some(mut session) = guard.take() {
             let success = session.killer.wait_success();
-            let _ = app_clone.emit("claude_cli_exit", ClaudeExitPayload {
-                task_id: tid_clone.clone(),
-                success,
-                reason: if success {
-                    "Completed successfully".into()
-                } else {
-                    "Process exited with error".into()
+            let _ = app_clone.emit(
+                "claude_cli_exit",
+                ClaudeExitPayload {
+                    task_id: tid_clone.clone(),
+                    success,
+                    reason: if success {
+                        "Completed successfully".into()
+                    } else {
+                        "Process exited with error".into()
+                    },
                 },
-            });
+            );
         }
     });
 
@@ -337,16 +362,29 @@ pub async fn execute_claude_task(
             "エラー: 指定されたLocal Path ({}) が存在しません。Settingsで正しいパスを設定してください。",
             cwd
         );
-        let _ = app_handle.emit("claude_cli_output", ClaudeOutputPayload {
-            task_id: task_id.clone(),
-            output: format!("\x1b[31m{}\x1b[0m\r\n", err_msg),
-        });
+        let _ = app_handle.emit(
+            "claude_cli_output",
+            ClaudeOutputPayload {
+                task_id: task_id.clone(),
+                output: format!("\x1b[31m{}\x1b[0m\r\n", err_msg),
+            },
+        );
         return Err(err_msg);
     }
 
-    log::info!("Spawning claude CLI: cwd={}, prompt_len={}", cwd, prompt.len());
+    log::info!(
+        "Spawning claude CLI: cwd={}, prompt_len={}",
+        cwd,
+        prompt.len()
+    );
 
-    spawn_claude_process(&app_handle, session_arc.clone(), task_id.clone(), prompt, cwd.clone())?;
+    spawn_claude_process(
+        &app_handle,
+        session_arc.clone(),
+        task_id.clone(),
+        prompt,
+        cwd.clone(),
+    )?;
 
     // タイムアウト (180秒)
     let session_arc_timeout = session_arc;
@@ -357,11 +395,14 @@ pub async fn execute_claude_task(
         let mut guard = session_arc_timeout.lock().unwrap();
         if let Some(mut session) = guard.take() {
             session.killer.kill();
-            let _ = app_timeout.emit("claude_cli_exit", ClaudeExitPayload {
-                task_id: tid_timeout,
-                success: false,
-                reason: "Timeout reached (180s). Process forcefully killed.".into(),
-            });
+            let _ = app_timeout.emit(
+                "claude_cli_exit",
+                ClaudeExitPayload {
+                    task_id: tid_timeout,
+                    success: false,
+                    reason: "Timeout reached (180s). Process forcefully killed.".into(),
+                },
+            );
         }
     });
 
@@ -377,11 +418,14 @@ pub async fn kill_claude_process(
     let mut guard = state.current_session.lock().map_err(|e| e.to_string())?;
     if let Some(mut session) = guard.take() {
         session.killer.kill();
-        let _ = app_handle.emit("claude_cli_exit", ClaudeExitPayload {
-            task_id,
-            success: false,
-            reason: "Manually killed by user.".into(),
-        });
+        let _ = app_handle.emit(
+            "claude_cli_exit",
+            ClaudeExitPayload {
+                task_id,
+                success: false,
+                reason: "Manually killed by user.".into(),
+            },
+        );
         Ok(())
     } else {
         Err("No active Claude process to kill.".into())

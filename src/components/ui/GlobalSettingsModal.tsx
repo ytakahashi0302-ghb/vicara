@@ -7,10 +7,47 @@ import { invoke } from '@tauri-apps/api/core';
 import { load } from '@tauri-apps/plugin-store';
 import { confirm, open } from '@tauri-apps/plugin-dialog';
 import toast from 'react-hot-toast';
+import { TeamSettingsTab } from './TeamSettingsTab';
+import { TeamConfiguration } from '../../types';
 
 interface GlobalSettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
+}
+
+const DEFAULT_TEAM_CONFIGURATION: TeamConfiguration = {
+    max_concurrent_agents: 1,
+    roles: [],
+};
+
+function validateTeamConfiguration(config: TeamConfiguration): string[] {
+    const messages: string[] = [];
+
+    if (!Number.isInteger(config.max_concurrent_agents) || config.max_concurrent_agents < 1 || config.max_concurrent_agents > 5) {
+        messages.push('最大並行稼働数は 1〜5 の範囲で設定してください。');
+    }
+
+    if (config.roles.length === 0) {
+        messages.push('ロールを最低 1 件追加してください。');
+    }
+
+    if (config.max_concurrent_agents > config.roles.length) {
+        messages.push('最大並行稼働数は登録ロール数以下にしてください。');
+    }
+
+    config.roles.forEach((role, index) => {
+        if (!role.name.trim()) {
+            messages.push(`Role ${index + 1} の役割名を入力してください。`);
+        }
+        if (!role.model.trim()) {
+            messages.push(`Role ${index + 1} の Claude モデルを入力してください。`);
+        }
+        if (!role.system_prompt.trim()) {
+            messages.push(`Role ${index + 1} のシステムプロンプトを入力してください。`);
+        }
+    });
+
+    return Array.from(new Set(messages));
 }
 
 export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProps) {
@@ -18,7 +55,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
     const currentProject = projects.find(p => p.id === currentProjectId);
     
     // Tabs state
-    const [activeTab, setActiveTab] = useState<'general' | 'ai'>('ai');
+    const [activeTab, setActiveTab] = useState<'general' | 'ai' | 'team'>('ai');
     
     // AI Settings State
     const [provider, setProvider] = useState<'anthropic' | 'gemini'>('anthropic');
@@ -39,16 +76,25 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
     // Path selection state
     const [isSelectingPath, setIsSelectingPath] = useState(false);
 
+    // Team settings state
+    const [teamConfig, setTeamConfig] = useState<TeamConfiguration>(DEFAULT_TEAM_CONFIGURATION);
+    const [isLoadingTeamConfig, setIsLoadingTeamConfig] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+
     // Initial load
     useEffect(() => {
         if (isOpen) {
-            loadStore();
+            loadSettings();
         }
     }, [isOpen]);
 
-    const loadStore = async () => {
+    const loadSettings = async () => {
+        setIsLoadingTeamConfig(true);
         try {
-            const store = await load('settings.json');
+            const [store, loadedTeamConfig] = await Promise.all([
+                load('settings.json'),
+                invoke<TeamConfiguration>('get_team_configuration'),
+            ]);
             
             const p = await store.get<{ value: string }>('default-ai-provider');
             if (p && p.value === 'gemini') setProvider('gemini');
@@ -57,10 +103,12 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             const ak = await store.get<{ value: string }>('anthropic-api-key');
             if (ak && ak.value) setAnthropicKey(ak.value);
             else if (typeof ak === 'string') setAnthropicKey(ak);
+            else setAnthropicKey('');
 
             const gk = await store.get<{ value: string }>('gemini-api-key');
             if (gk && gk.value) setGeminiKey(gk.value);
             else if (typeof gk === 'string') setGeminiKey(gk);
+            else setGeminiKey('');
 
             const am = await store.get<{ value: string }>('anthropic-model');
             if (am && am.value) setAnthropicModel(am.value);
@@ -71,9 +119,14 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             if (gm && gm.value) setGeminiModel(gm.value);
             else if (typeof gm === 'string') setGeminiModel(gm);
             else setGeminiModel('gemini-2.5-flash'); // default
+
+            setTeamConfig(loadedTeamConfig);
             
         } catch (e) {
             console.error('Failed to load settings', e);
+            toast.error(`設定の読み込みに失敗しました: ${e}`);
+        } finally {
+            setIsLoadingTeamConfig(false);
         }
     };
 
@@ -101,7 +154,16 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
         }
     };
 
+    const teamValidationMessages = validateTeamConfiguration(teamConfig);
+    const isSaveDisabled = isSaving || isLoadingTeamConfig || teamValidationMessages.length > 0;
+
     const handleSave = async () => {
+        if (teamValidationMessages.length > 0) {
+            toast.error(teamValidationMessages[0]);
+            return;
+        }
+
+        setIsSaving(true);
         try {
             const store = await load('settings.json');
             await store.set('default-ai-provider', { value: provider });
@@ -110,11 +172,14 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             await store.set('anthropic-model', { value: anthropicModel });
             await store.set('gemini-model', { value: geminiModel });
             await store.save();
+            await invoke('save_team_configuration', { config: teamConfig });
             toast.success('設定を保存しました');
             onClose();
         } catch (e) {
             console.error('Failed to save settings', e);
             toast.error('設定の保存に失敗しました');
+        } finally {
+            setIsSaving(false);
         }
     };
 
@@ -134,7 +199,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
         try {
             await deleteProject(currentProjectId);
             onClose();
-        } catch (e) {
+        } catch {
             // Error toast は WorkspaceContext 側で処理
         }
     };
@@ -194,6 +259,16 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                     }`}
                 >
                     プロジェクト設定
+                </button>
+                <button
+                    onClick={() => setActiveTab('team')}
+                    className={`pb-2 px-4 text-sm font-medium transition-colors ${
+                        activeTab === 'team'
+                            ? 'border-b-2 border-blue-500 text-blue-600'
+                            : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                >
+                    チーム設定
                 </button>
             </div>
 
@@ -392,6 +467,19 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                         </div>
                     </div>
                 )}
+
+                {activeTab === 'team' && (
+                    <TeamSettingsTab
+                        config={teamConfig}
+                        validationMessages={teamValidationMessages}
+                        isLoading={isLoadingTeamConfig}
+                        anthropicModelsList={anthropicModelsList}
+                        isFetchingModels={isFetchingModels}
+                        canFetchModels={Boolean(anthropicKey.trim())}
+                        onChange={setTeamConfig}
+                        onFetchModels={() => fetchModels('anthropic')}
+                    />
+                )}
             </div>
 
             <div className="mt-6 flex justify-end gap-3 pt-4 border-t border-gray-100">
@@ -403,9 +491,10 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                 </button>
                 <button
                     onClick={handleSave}
+                    disabled={isSaveDisabled}
                     className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700 focus:outline-none transition-colors"
                 >
-                    設定を保存
+                    {isSaving ? '保存中...' : '設定を保存'}
                 </button>
             </div>
         </Modal>

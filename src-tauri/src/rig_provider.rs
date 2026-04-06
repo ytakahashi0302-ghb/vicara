@@ -3,9 +3,7 @@ use rig::client::CompletionClient;
 use rig::completion::message::Message as RigMessage;
 use rig::completion::Chat;
 use rig::providers::anthropic;
-use rig::providers::anthropic::completion::{
-    CompletionModel as AnthropicModel,
-};
+use rig::providers::anthropic::completion::CompletionModel as AnthropicModel;
 use rig::providers::gemini;
 use rig::providers::gemini::completion::{CompletionModel as GeminiModel, GEMINI_2_0_FLASH};
 use tauri::AppHandle;
@@ -56,7 +54,11 @@ pub async fn resolve_provider_and_key(
 
     let (key_name, model_key_name, default_model) = match provider {
         AiProvider::Gemini => ("gemini-api-key", "gemini-model", "gemini-2.0-flash"),
-        AiProvider::Anthropic => ("anthropic-api-key", "anthropic-model", "claude-haiku-4-5-20251001"),
+        AiProvider::Anthropic => (
+            "anthropic-api-key",
+            "anthropic-model",
+            "claude-haiku-4-5-20251001",
+        ),
     };
 
     let api_key = match store.get(key_name) {
@@ -84,7 +86,11 @@ pub async fn resolve_provider_and_key(
                     .unwrap_or(default_model)
                     .to_string()
             } else if let Some(s) = val.as_str() {
-                if s.is_empty() { default_model.to_string() } else { s.to_string() }
+                if s.is_empty() {
+                    default_model.to_string()
+                } else {
+                    s.to_string()
+                }
             } else {
                 default_model.to_string()
             }
@@ -230,7 +236,10 @@ pub async fn chat_team_leader_with_tools(
 }
 
 #[tauri::command]
-pub async fn get_available_models(app: tauri::AppHandle, provider: String) -> Result<Vec<String>, String> {
+pub async fn get_available_models(
+    app: tauri::AppHandle,
+    provider: String,
+) -> Result<Vec<String>, String> {
     use tauri_plugin_store::StoreExt;
     let store = app
         .store("settings.json")
@@ -240,23 +249,33 @@ pub async fn get_available_models(app: tauri::AppHandle, provider: String) -> Re
         let api_key = match store.get("gemini-api-key") {
             Some(val) => {
                 if let Some(obj) = val.as_object() {
-                    obj.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    obj.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
                 } else {
                     val.as_str().map(|s| s.to_string())
                 }
             }
             None => None,
-        }.ok_or("Gemini API key is not set")?;
+        }
+        .ok_or("Gemini API key is not set")?;
 
         let client = reqwest::Client::new();
-        let url = format!("https://generativelanguage.googleapis.com/v1beta/models?key={}", api_key);
-        let res = client.get(&url)
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+            api_key
+        );
+        let res = client
+            .get(&url)
             .send()
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
-            
-        let json: serde_json::Value = res.json().await.map_err(|e| format!("Failed to parse JSON: {}", e))?;
-        
+
+        let json: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
         let mut models = vec![];
         if let Some(data) = json.get("models").and_then(|v| v.as_array()) {
             for m in data {
@@ -268,30 +287,37 @@ pub async fn get_available_models(app: tauri::AppHandle, provider: String) -> Re
         } else {
             return Err("Invalid response format from Gemini API".into());
         }
-        
+
         Ok(models)
     } else {
         let api_key = match store.get("anthropic-api-key") {
             Some(val) => {
                 if let Some(obj) = val.as_object() {
-                    obj.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    obj.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
                 } else {
                     val.as_str().map(|s| s.to_string())
                 }
             }
             None => None,
-        }.ok_or("Anthropic API key is not set")?;
+        }
+        .ok_or("Anthropic API key is not set")?;
 
         let client = reqwest::Client::new();
-        let res = client.get("https://api.anthropic.com/v1/models")
+        let res = client
+            .get("https://api.anthropic.com/v1/models")
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .send()
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
-            
-        let json: serde_json::Value = res.json().await.map_err(|e| format!("Failed to parse JSON: {}", e))?;
-        
+
+        let json: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse JSON: {}", e))?;
+
         let mut models = vec![];
         if let Some(data) = json.get("data").and_then(|v| v.as_array()) {
             for m in data {
@@ -300,11 +326,15 @@ pub async fn get_available_models(app: tauri::AppHandle, provider: String) -> Re
                 }
             }
         } else if json.get("type").and_then(|v| v.as_str()) == Some("error") {
-            if let Some(msg) = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+            if let Some(msg) = json
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+            {
                 return Err(format!("Anthropic API error: {}", msg));
             }
         }
-        
+
         Ok(models)
     }
 }

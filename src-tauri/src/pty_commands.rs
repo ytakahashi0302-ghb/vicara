@@ -9,10 +9,7 @@ use tauri::State;
 /// # 戻り値
 /// セッション ID（UUID 文字列）
 #[tauri::command]
-pub async fn pty_spawn(
-    state: State<'_, PtyManager>,
-    cwd: String,
-) -> Result<String, String> {
+pub async fn pty_spawn(state: State<'_, PtyManager>, cwd: String) -> Result<String, String> {
     state.spawn_session(&cwd).await
 }
 
@@ -38,9 +35,6 @@ pub async fn pty_execute(
 /// # 引数
 /// * `session_id` — `pty_spawn` で取得したセッション ID
 #[tauri::command]
-pub async fn pty_kill(
-    state: State<'_, PtyManager>,
-    session_id: String,
-) -> Result<(), String> {
+pub async fn pty_kill(state: State<'_, PtyManager>, session_id: String) -> Result<(), String> {
     state.kill_session(&session_id).await
 }
