@@ -97,19 +97,23 @@ pub async fn execute_claude_task(
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
     // コマンド構築:
-    // プロンプトは一時ファイルからシェルパイプで stdin に流し込む。
-    // claude -p (print mode) は引数にプロンプトがない場合 stdin から読む。
-    // PTY は stdout 側で TTY 検出を提供し、ANSI カラー出力を維持する。
+    // タスク詳細は一時ファイルに書き出し、シェルパイプで claude の stdin に流す。
+    // -p には短い指示文のみを渡し（argv エスケープ安全）、
+    // 詳細なタスク内容は stdin 経由で受け取らせる。
+    // PTY は stdout 側で TTY 検出を維持（ANSI カラー出力対応）。
     //
-    // Windows: cmd.exe /C "type <file> | claude -p ..."
-    // Unix:    sh -c "cat <file> | claude -p ..."
+    // Windows: cmd.exe /C type <file> | claude -p "..." --permission-mode bypassPermissions --add-dir <cwd> --verbose
+    // Unix:    sh -c 'cat <file> | claude -p "..." --permission-mode bypassPermissions --add-dir <cwd> --verbose'
+    let p_prompt = "Implement the task described in stdin. Verify your changes before finishing.";
+
     #[cfg(target_os = "windows")]
     let mut cmd = {
         let mut c = CommandBuilder::new("cmd.exe");
         c.args([
             "/C", "type", &prompt_file_str,
-            "|", "claude", "-p",
+            "|", "claude", "-p", p_prompt,
             "--permission-mode", "bypassPermissions",
+            "--add-dir", &cwd,
             "--verbose",
         ]);
         c
@@ -118,8 +122,8 @@ pub async fn execute_claude_task(
     #[cfg(not(target_os = "windows"))]
     let mut cmd = {
         let shell_cmd = format!(
-            "cat '{}' | claude -p --permission-mode bypassPermissions --verbose",
-            prompt_file_str
+            "cat '{}' | claude -p '{}' --permission-mode bypassPermissions --add-dir '{}' --verbose",
+            prompt_file_str, p_prompt, cwd
         );
         let mut c = CommandBuilder::new("sh");
         c.args(["-c", &shell_cmd]);
