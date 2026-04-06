@@ -144,14 +144,6 @@ impl PtyManager {
             .ok_or_else(|| format!("Session not found: {}", session_id))?;
         Ok(())
     }
-
-    /// デバッグ用: 現在アクティブなセッション ID の一覧を返す。
-    pub fn list_sessions(&self) -> Vec<String> {
-        match self.sessions.lock() {
-            Ok(sessions) => sessions.keys().cloned().collect(),
-            Err(_) => vec![],
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,13 +366,6 @@ impl PtyManager {
             .ok_or_else(|| format!("Session not found: {}", session_id))?;
         let _ = session.child.kill();
         Ok(())
-    }
-
-    pub fn list_sessions(&self) -> Vec<String> {
-        match self.sessions.lock() {
-            Ok(sessions) => sessions.keys().cloned().collect(),
-            Err(_) => vec![],
-        }
     }
 }
 

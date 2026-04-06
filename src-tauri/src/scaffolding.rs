@@ -419,7 +419,7 @@ pub async fn execute_scaffold_ai(
     let task_id = format!("scaffold-ai-{}", uuid::Uuid::new_v4());
 
     // Claude CLI に直接委譲
-    crate::claude_runner::execute_claude_task(
+    crate::claude_runner::execute_claude_prompt_task(
         app_handle,
         state,
         task_id,

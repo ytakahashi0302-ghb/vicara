@@ -47,6 +47,7 @@ pub struct Task {
     pub sprint_id: Option<String>,
     pub archived: bool,
     pub assignee_type: Option<String>,
+    pub assigned_role_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub priority: i32,
@@ -190,6 +191,34 @@ where
         Ok(result) => Ok(result),
         Err(e) => Err(e.to_string()),
     }
+}
+
+pub async fn get_task_by_id(app: &AppHandle, task_id: &str) -> Result<Option<Task>, String> {
+    let query = "SELECT * FROM tasks WHERE id = ? LIMIT 1";
+    let values = vec![serde_json::to_value(task_id).unwrap()];
+    let mut tasks = select_query::<Task>(app, query, values).await?;
+    Ok(tasks.pop())
+}
+
+pub async fn get_team_role_by_id(
+    app: &AppHandle,
+    role_id: &str,
+) -> Result<Option<TeamRole>, String> {
+    let query = r#"
+        SELECT id, name, system_prompt, model, sort_order
+        FROM team_roles
+        WHERE id = ?
+        LIMIT 1
+    "#;
+    let values = vec![serde_json::to_value(role_id).unwrap()];
+    let mut roles = select_query::<TeamRole>(app, query, values).await?;
+    Ok(roles.pop())
+}
+
+pub async fn get_max_concurrent_agents_value(app: &AppHandle) -> Result<i32, String> {
+    let query = "SELECT max_concurrent_agents FROM team_settings WHERE id = 1 LIMIT 1";
+    let mut settings = select_query::<TeamSettings>(app, query, vec![]).await?;
+    Ok(settings.pop().map(|s| s.max_concurrent_agents).unwrap_or(1))
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -406,10 +435,11 @@ pub async fn add_task(
     description: Option<String>,
     status: String,
     assignee_type: Option<String>,
+    assigned_role_id: Option<String>,
     priority: Option<i32>,
 ) -> Result<QueryResult, String> {
     let priority_val = priority.unwrap_or(3);
-    let query = "INSERT INTO tasks (id, project_id, story_id, title, description, status, assignee_type, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    let query = "INSERT INTO tasks (id, project_id, story_id, title, description, status, assignee_type, assigned_role_id, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
     let values = vec![
         serde_json::to_value(id).unwrap(),
         serde_json::to_value(project_id).unwrap(),
@@ -418,6 +448,7 @@ pub async fn add_task(
         serde_json::to_value(description).unwrap(),
         serde_json::to_value(status).unwrap(),
         serde_json::to_value(assignee_type).unwrap(),
+        serde_json::to_value(assigned_role_id).unwrap(),
         serde_json::to_value(priority_val).unwrap(),
     ];
     execute_query(&app, query, values).await
@@ -445,15 +476,17 @@ pub async fn update_task(
     description: Option<String>,
     status: String,
     assignee_type: Option<String>,
+    assigned_role_id: Option<String>,
     priority: Option<i32>,
 ) -> Result<QueryResult, String> {
     let priority_val = priority.unwrap_or(3);
-    let query = "UPDATE tasks SET title = ?, description = ?, status = ?, assignee_type = ?, priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    let query = "UPDATE tasks SET title = ?, description = ?, status = ?, assignee_type = ?, assigned_role_id = ?, priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
     let values = vec![
         serde_json::to_value(title).unwrap(),
         serde_json::to_value(description).unwrap(),
         serde_json::to_value(status).unwrap(),
         serde_json::to_value(assignee_type).unwrap(),
+        serde_json::to_value(assigned_role_id).unwrap(),
         serde_json::to_value(priority_val).unwrap(),
         serde_json::to_value(id).unwrap(),
     ];

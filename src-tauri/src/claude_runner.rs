@@ -1,4 +1,8 @@
+use crate::db;
+use std::collections::HashMap;
+use std::fs;
 use std::io::Read as IoRead;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -11,8 +15,25 @@ use tauri::{AppHandle, Emitter};
 ///
 /// trait object で統一し、kill / wait のみ公開する。
 struct ClaudeSession {
+    info: ActiveClaudeSession,
+    temp_file_path: PathBuf,
     /// プロセス kill 用ハンドル
     killer: Box<dyn ProcessKiller + Send + Sync>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ActiveClaudeSession {
+    task_id: String,
+    task_title: String,
+    role_name: String,
+    model: String,
+    started_at: i64,
+    status: String,
+}
+
+enum ClaudeSessionEntry {
+    Starting(ActiveClaudeSession),
+    Running(ClaudeSession),
 }
 
 trait ProcessKiller {
@@ -60,16 +81,18 @@ impl ProcessKiller for PtyChildKiller {
 }
 
 pub struct ClaudeState {
-    pub current_session: Arc<Mutex<Option<ClaudeSession>>>,
+    sessions: Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>,
 }
 
 impl ClaudeState {
     pub fn new() -> Self {
         Self {
-            current_session: Arc::new(Mutex::new(None)),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
+
+const DEFAULT_CLAUDE_MODEL: &str = "claude-3-5-sonnet-20241022";
 
 // ---------------------------------------------------------------------------
 // イベントペイロード
@@ -89,6 +112,271 @@ struct ClaudeExitPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn current_timestamp_millis() -> Result<i64, String> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as i64)
+}
+
+fn cleanup_temp_file(path: &Path) {
+    if let Err(error) = fs::remove_file(path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            log::warn!(
+                "failed to remove temporary Claude prompt file {}: {}",
+                path.display(),
+                error
+            );
+        }
+    }
+}
+
+fn sanitize_for_filename(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if sanitized.is_empty() {
+        "task".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn build_task_prompt(task: &db::Task, role: &db::TeamRole) -> String {
+    let description = task.description.as_deref().unwrap_or("特になし");
+
+    format!(
+        "あなたは {} です。\n{}\n\n# タスク名\n{}\n\n# 詳細\n{}\n\n# 作業指示\n- タスクのゴールを達成するための実装を行ってください。\n- 必要なファイル変更を加えてください。\n- 作業を終える前に変更内容が意図通りか自己検証してください。\n- 完了したら終了してください。\n",
+        role.name.trim(),
+        role.system_prompt.trim(),
+        task.title.trim(),
+        description.trim()
+    )
+}
+
+fn create_prompt_file(task_id: &str, prompt: &str) -> Result<PathBuf, String> {
+    let timestamp = current_timestamp_millis()?;
+
+    let file_name = format!(
+        "microscrum-claude-{}-{}.md",
+        sanitize_for_filename(task_id),
+        timestamp
+    );
+    let path = std::env::temp_dir().join(file_name);
+
+    fs::write(&path, prompt).map_err(|e| {
+        format!(
+            "Claude 実行用の一時ファイル作成に失敗しました ({}): {}",
+            path.display(),
+            e
+        )
+    })?;
+
+    Ok(path)
+}
+
+fn build_cli_prompt_from_file(prompt_file_path: &Path) -> String {
+    format!(
+        "以下のファイルに記載された役割とタスク指示を読み込み、それに従って開発を実行してください。ファイルパス: {}",
+        prompt_file_path.display()
+    )
+}
+
+fn get_session_summary(entry: &ClaudeSessionEntry) -> ActiveClaudeSession {
+    match entry {
+        ClaudeSessionEntry::Starting(info) => info.clone(),
+        ClaudeSessionEntry::Running(session) => session.info.clone(),
+    }
+}
+
+fn remove_session_entry(
+    sessions_arc: &Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>,
+    task_id: &str,
+) -> Option<ClaudeSessionEntry> {
+    match sessions_arc.lock() {
+        Ok(mut sessions) => sessions.remove(task_id),
+        Err(_) => None,
+    }
+}
+
+fn reserve_session_slot(
+    state: &tauri::State<'_, ClaudeState>,
+    session_info: ActiveClaudeSession,
+    max_concurrent_agents: i32,
+) -> Result<Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>, String> {
+    let max_concurrent_agents = max_concurrent_agents.max(1) as usize;
+    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+
+    if sessions.contains_key(&session_info.task_id) {
+        return Err(format!(
+            "task_id={} の Claude プロセスはすでに起動中です。",
+            session_info.task_id
+        ));
+    }
+
+    if sessions.len() >= max_concurrent_agents {
+        return Err(format!(
+            "最大並行稼働数 ({}) に達しているため、新しいタスクは起動できません。",
+            max_concurrent_agents
+        ));
+    }
+
+    sessions.insert(
+        session_info.task_id.clone(),
+        ClaudeSessionEntry::Starting(session_info),
+    );
+    drop(sessions);
+
+    Ok(state.sessions.clone())
+}
+
+fn build_generic_session_info(task_id: &str, model: &str) -> Result<ActiveClaudeSession, String> {
+    Ok(ActiveClaudeSession {
+        task_id: task_id.to_string(),
+        task_title: task_id.to_string(),
+        role_name: "Scaffold AI".to_string(),
+        model: model.to_string(),
+        started_at: current_timestamp_millis()?,
+        status: "Starting".to_string(),
+    })
+}
+
+fn build_task_session_info(
+    task: &db::Task,
+    role: &db::TeamRole,
+) -> Result<ActiveClaudeSession, String> {
+    Ok(ActiveClaudeSession {
+        task_id: task.id.clone(),
+        task_title: task.title.clone(),
+        role_name: role.name.clone(),
+        model: role.model.clone(),
+        started_at: current_timestamp_millis()?,
+        status: "Starting".to_string(),
+    })
+}
+
+fn promote_session_to_running(
+    app_handle: &AppHandle,
+    sessions_arc: &Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>,
+    task_id: &str,
+    session: ClaudeSession,
+) -> Result<(), String> {
+    let started_payload = session.info.clone();
+
+    let mut sessions = sessions_arc.lock().map_err(|e| e.to_string())?;
+    sessions.insert(task_id.to_string(), ClaudeSessionEntry::Running(session));
+    drop(sessions);
+
+    if let Err(error) = app_handle.emit("claude_cli_started", started_payload) {
+        log::warn!(
+            "failed to emit claude_cli_started for {}: {}",
+            task_id,
+            error
+        );
+    }
+
+    Ok(())
+}
+
+async fn execute_prompt_request(
+    app_handle: AppHandle,
+    sessions_arc: Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>,
+    session_info: ActiveClaudeSession,
+    prompt: String,
+    cwd: String,
+) -> Result<(), String> {
+    let cwd_path = std::path::Path::new(&cwd);
+    if !cwd_path.exists() || !cwd_path.is_dir() {
+        remove_session_entry(&sessions_arc, &session_info.task_id);
+        let err_msg = format!(
+            "エラー: 指定されたLocal Path ({}) が存在しません。Settingsで正しいパスを設定してください。",
+            cwd
+        );
+        let _ = app_handle.emit(
+            "claude_cli_output",
+            ClaudeOutputPayload {
+                task_id: session_info.task_id.clone(),
+                output: format!("\x1b[31m{}\x1b[0m\r\n", err_msg),
+            },
+        );
+        return Err(err_msg);
+    }
+
+    let prompt_file_path = match create_prompt_file(&session_info.task_id, &prompt) {
+        Ok(path) => path,
+        Err(error) => {
+            remove_session_entry(&sessions_arc, &session_info.task_id);
+            return Err(error);
+        }
+    };
+
+    if let Err(error) = spawn_claude_process(
+        &app_handle,
+        sessions_arc.clone(),
+        session_info.clone(),
+        prompt_file_path.clone(),
+        cwd,
+    ) {
+        remove_session_entry(&sessions_arc, &session_info.task_id);
+        cleanup_temp_file(&prompt_file_path);
+        return Err(error);
+    }
+
+    let app_timeout = app_handle.clone();
+    let sessions_arc_timeout = sessions_arc.clone();
+    let timeout_task_id = session_info.task_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(180)).await;
+
+        if let Some(entry) = remove_session_entry(&sessions_arc_timeout, &timeout_task_id) {
+            match entry {
+                ClaudeSessionEntry::Running(mut session) => {
+                    session.killer.kill();
+                    cleanup_temp_file(&session.temp_file_path);
+                }
+                ClaudeSessionEntry::Starting(_) => {}
+            }
+
+            let _ = app_timeout.emit(
+                "claude_cli_exit",
+                ClaudeExitPayload {
+                    task_id: timeout_task_id,
+                    success: false,
+                    reason: "Timeout reached (180s). Process forcefully killed.".into(),
+                },
+            );
+        }
+    });
+
+    Ok(())
+}
+
+pub async fn execute_claude_prompt_task(
+    app_handle: AppHandle,
+    state: tauri::State<'_, ClaudeState>,
+    task_id: String,
+    prompt: String,
+    cwd: String,
+) -> Result<(), String> {
+    let max_concurrent_agents = db::get_max_concurrent_agents_value(&app_handle).await?;
+    let session_info = build_generic_session_info(&task_id, DEFAULT_CLAUDE_MODEL)?;
+    let sessions_arc = reserve_session_slot(&state, session_info.clone(), max_concurrent_agents)?;
+
+    execute_prompt_request(app_handle, sessions_arc, session_info, prompt, cwd).await
+}
+
+// ---------------------------------------------------------------------------
 // Windows 実装: std::process::Command + piped stdout/stderr
 //
 // portable-pty の ConPTY は PSEUDOCONSOLE_WIN32_INPUT_MODE フラグにより
@@ -99,18 +387,25 @@ struct ClaudeExitPayload {
 #[cfg(target_os = "windows")]
 fn spawn_claude_process(
     app_handle: &AppHandle,
-    session_arc: Arc<Mutex<Option<ClaudeSession>>>,
-    task_id: String,
-    prompt: String,
+    sessions_arc: Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>,
+    session_info: ActiveClaudeSession,
+    prompt_file_path: PathBuf,
     cwd: String,
 ) -> Result<(), String> {
     use std::process::{Command, Stdio};
 
+    let cli_prompt = build_cli_prompt_from_file(&prompt_file_path);
+
     let mut child = Command::new("claude")
         .args([
-            "-p", &prompt,
-            "--permission-mode", "bypassPermissions",
-            "--add-dir", &cwd,
+            "-p",
+            &cli_prompt,
+            "--model",
+            &session_info.model,
+            "--permission-mode",
+            "bypassPermissions",
+            "--add-dir",
+            &cwd,
             "--verbose",
         ])
         .current_dir(&cwd)
@@ -131,17 +426,18 @@ fn spawn_claude_process(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
-    // セッション登録
-    {
-        let mut guard = session_arc.lock().map_err(|e| e.to_string())?;
-        *guard = Some(ClaudeSession {
-            killer: Box::new(StdChildKiller { child }),
-        });
-    }
+    let mut running_info = session_info.clone();
+    running_info.status = "Running".to_string();
 
-    // stdout 読み取りスレッド
+    let session = ClaudeSession {
+        info: running_info.clone(),
+        temp_file_path: prompt_file_path,
+        killer: Box::new(StdChildKiller { child }),
+    };
+    promote_session_to_running(app_handle, &sessions_arc, &session_info.task_id, session)?;
+
     let app_out = app_handle.clone();
-    let tid_out = task_id.clone();
+    let tid_out = session_info.task_id.clone();
     if let Some(mut reader) = stdout {
         std::thread::spawn(move || {
             let mut buf = [0u8; 1024];
@@ -170,9 +466,8 @@ fn spawn_claude_process(
         });
     }
 
-    // stderr 読み取りスレッド
     let app_err = app_handle.clone();
-    let tid_err = task_id.clone();
+    let tid_err = session_info.task_id.clone();
     if let Some(mut reader) = stderr {
         std::thread::spawn(move || {
             let mut buf = [0u8; 1024];
@@ -195,17 +490,17 @@ fn spawn_claude_process(
         });
     }
 
-    // 終了待機スレッド
-    let session_wait = session_arc.clone();
     let app_wait = app_handle.clone();
-    let tid_wait = task_id.clone();
+    let sessions_wait = sessions_arc.clone();
+    let tid_wait = session_info.task_id.clone();
     std::thread::spawn(move || {
-        // stdout/stderr スレッドが先に EOF を受け取るのを少し待つ
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        let mut guard = session_wait.lock().unwrap();
-        if let Some(mut session) = guard.take() {
+        if let Some(ClaudeSessionEntry::Running(mut session)) =
+            remove_session_entry(&sessions_wait, &tid_wait)
+        {
             let success = session.killer.wait_success();
+            cleanup_temp_file(&session.temp_file_path);
             let _ = app_wait.emit(
                 "claude_cli_exit",
                 ClaudeExitPayload {
@@ -232,9 +527,9 @@ fn spawn_claude_process(
 #[cfg(not(target_os = "windows"))]
 fn spawn_claude_process(
     app_handle: &AppHandle,
-    session_arc: Arc<Mutex<Option<ClaudeSession>>>,
-    task_id: String,
-    prompt: String,
+    sessions_arc: Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>,
+    session_info: ActiveClaudeSession,
+    prompt_file_path: PathBuf,
     cwd: String,
 ) -> Result<(), String> {
     let pty_system = native_pty_system();
@@ -247,10 +542,14 @@ fn spawn_claude_process(
         })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
+    let cli_prompt = build_cli_prompt_from_file(&prompt_file_path);
+
     let mut cmd = CommandBuilder::new("claude");
     cmd.args([
         "-p",
-        &prompt,
+        &cli_prompt,
+        "--model",
+        &session_info.model,
         "--permission-mode",
         "bypassPermissions",
         "--add-dir",
@@ -271,21 +570,23 @@ fn spawn_claude_process(
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
-    {
-        let mut guard = session_arc.lock().map_err(|e| e.to_string())?;
-        *guard = Some(ClaudeSession {
-            killer: Box::new(PtyChildKiller {
-                child,
-                _master: pair.master,
-                _slave: pair.slave,
-            }),
-        });
-    }
+    let mut running_info = session_info.clone();
+    running_info.status = "Running".to_string();
 
-    // PTY 読み取り + 終了検知スレッド
-    let session_wait = session_arc.clone();
+    let session = ClaudeSession {
+        info: running_info.clone(),
+        temp_file_path: prompt_file_path,
+        killer: Box::new(PtyChildKiller {
+            child,
+            _master: pair.master,
+            _slave: pair.slave,
+        }),
+    };
+    promote_session_to_running(app_handle, &sessions_arc, &session_info.task_id, session)?;
+
     let app_clone = app_handle.clone();
-    let tid_clone = task_id.clone();
+    let sessions_wait = sessions_arc.clone();
+    let tid_clone = session_info.task_id.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 1024];
@@ -314,9 +615,11 @@ fn spawn_claude_process(
 
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        let mut guard = session_wait.lock().unwrap();
-        if let Some(mut session) = guard.take() {
+        if let Some(ClaudeSessionEntry::Running(mut session)) =
+            remove_session_entry(&sessions_wait, &tid_clone)
+        {
             let success = session.killer.wait_success();
+            cleanup_temp_file(&session.temp_file_path);
             let _ = app_clone.emit(
                 "claude_cli_exit",
                 ClaudeExitPayload {
@@ -340,73 +643,62 @@ fn spawn_claude_process(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+pub async fn get_active_claude_sessions(
+    state: tauri::State<'_, ClaudeState>,
+) -> Result<Vec<ActiveClaudeSession>, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let mut result: Vec<ActiveClaudeSession> = sessions.values().map(get_session_summary).collect();
+    result.sort_by_key(|session| session.started_at);
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn execute_claude_task(
     app_handle: AppHandle,
     state: tauri::State<'_, ClaudeState>,
     task_id: String,
-    prompt: String,
     cwd: String,
 ) -> Result<(), String> {
-    let session_arc = {
-        let guard = state.current_session.lock().map_err(|e| e.to_string())?;
-        if guard.is_some() {
-            return Err("A Claude process is already running.".into());
-        }
-        state.current_session.clone()
-    };
+    let task = db::get_task_by_id(&app_handle, &task_id)
+        .await?
+        .ok_or_else(|| format!("task_id={} のタスクが見つかりません", task_id))?;
 
-    // ディレクトリ存在チェック
-    let cwd_path = std::path::Path::new(&cwd);
-    if !cwd_path.exists() || !cwd_path.is_dir() {
-        let err_msg = format!(
-            "エラー: 指定されたLocal Path ({}) が存在しません。Settingsで正しいパスを設定してください。",
-            cwd
-        );
-        let _ = app_handle.emit(
-            "claude_cli_output",
-            ClaudeOutputPayload {
-                task_id: task_id.clone(),
-                output: format!("\x1b[31m{}\x1b[0m\r\n", err_msg),
-            },
-        );
-        return Err(err_msg);
+    if task.status == "In Progress" {
+        return Err("このタスクはすでに進行中です。".to_string());
+    }
+    if task.status == "Done" {
+        return Err("完了済みタスクは再実行できません。".to_string());
     }
 
+    let role_id = task.assigned_role_id.clone().ok_or_else(|| {
+        "担当ロールが未設定です。タスク詳細で担当ロールを選択してください。".to_string()
+    })?;
+
+    let role = db::get_team_role_by_id(&app_handle, &role_id)
+        .await?
+        .ok_or_else(|| format!("担当ロールが見つかりません: {}", role_id))?;
+
+    if role.model.trim().is_empty() {
+        return Err("担当ロールの Claude モデルが未設定です。".to_string());
+    }
+    if role.system_prompt.trim().is_empty() {
+        return Err("担当ロールのシステムプロンプトが未設定です。".to_string());
+    }
+
+    let max_concurrent_agents = db::get_max_concurrent_agents_value(&app_handle).await?;
+    let session_info = build_task_session_info(&task, &role)?;
+    let sessions_arc = reserve_session_slot(&state, session_info.clone(), max_concurrent_agents)?;
+
     log::info!(
-        "Spawning claude CLI: cwd={}, prompt_len={}",
-        cwd,
-        prompt.len()
+        "Preparing claude CLI task: task_id={}, role={}, model={}, configured_limit={}",
+        task.id,
+        role.name,
+        role.model,
+        max_concurrent_agents
     );
 
-    spawn_claude_process(
-        &app_handle,
-        session_arc.clone(),
-        task_id.clone(),
-        prompt,
-        cwd.clone(),
-    )?;
-
-    // タイムアウト (180秒)
-    let session_arc_timeout = session_arc;
-    let app_timeout = app_handle.clone();
-    let tid_timeout = task_id.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(180)).await;
-        let mut guard = session_arc_timeout.lock().unwrap();
-        if let Some(mut session) = guard.take() {
-            session.killer.kill();
-            let _ = app_timeout.emit(
-                "claude_cli_exit",
-                ClaudeExitPayload {
-                    task_id: tid_timeout,
-                    success: false,
-                    reason: "Timeout reached (180s). Process forcefully killed.".into(),
-                },
-            );
-        }
-    });
-
-    Ok(())
+    let prompt = build_task_prompt(&task, &role);
+    execute_prompt_request(app_handle, sessions_arc, session_info, prompt, cwd).await
 }
 
 #[tauri::command]
@@ -415,19 +707,31 @@ pub async fn kill_claude_process(
     state: tauri::State<'_, ClaudeState>,
     task_id: String,
 ) -> Result<(), String> {
-    let mut guard = state.current_session.lock().map_err(|e| e.to_string())?;
-    if let Some(mut session) = guard.take() {
-        session.killer.kill();
-        let _ = app_handle.emit(
+    let entry = remove_session_entry(&state.sessions, &task_id).ok_or_else(|| {
+        format!(
+            "task_id={} に紐づく Claude プロセスは存在しません。",
+            task_id
+        )
+    })?;
+
+    match entry {
+        ClaudeSessionEntry::Running(mut session) => {
+            session.killer.kill();
+            cleanup_temp_file(&session.temp_file_path);
+        }
+        ClaudeSessionEntry::Starting(_) => {}
+    }
+
+    app_handle
+        .emit(
             "claude_cli_exit",
             ClaudeExitPayload {
                 task_id,
                 success: false,
                 reason: "Manually killed by user.".into(),
             },
-        );
-        Ok(())
-    } else {
-        Err("No active Claude process to kill.".into())
-    }
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }

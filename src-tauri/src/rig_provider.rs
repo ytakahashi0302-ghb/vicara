@@ -5,7 +5,7 @@ use rig::completion::Chat;
 use rig::providers::anthropic;
 use rig::providers::anthropic::completion::CompletionModel as AnthropicModel;
 use rig::providers::gemini;
-use rig::providers::gemini::completion::{CompletionModel as GeminiModel, GEMINI_2_0_FLASH};
+use rig::providers::gemini::completion::CompletionModel as GeminiModel;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 

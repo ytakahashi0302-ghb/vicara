@@ -90,6 +90,12 @@ pub fn run() {
             sql: include_str!("../migrations/12_team_configuration.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 13,
+            description: "task_role_assignment",
+            sql: include_str!("../migrations/13_task_role_assignment.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -167,6 +173,7 @@ pub fn run() {
             pty_commands::pty_spawn,
             pty_commands::pty_execute,
             pty_commands::pty_kill,
+            claude_runner::get_active_claude_sessions,
             claude_runner::execute_claude_task,
             claude_runner::kill_claude_process,
             scaffolding::detect_tech_stack,

@@ -16,6 +16,10 @@ interface TaskCardProps {
     availableTasks?: Task[];
 }
 
+type TaskWithRoleAssignment = Task & {
+    assigned_role_id?: string | null;
+};
+
 function getPriorityBadgeClass(priority: number): string {
     if (priority <= 1) return 'bg-red-100 text-red-700 border-red-200';
     if (priority === 2) return 'bg-orange-100 text-orange-700 border-orange-200';
@@ -25,12 +29,14 @@ function getPriorityBadgeClass(priority: number): string {
 }
 
 export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: TaskCardProps) {
-    const { updateTaskStatus, updateTask, deleteTask, setTaskDependencies, isTaskBlocked, getTaskBlockers, getBlockerIds } = useScrum();
+    const { updateTaskStatus, refresh, deleteTask, setTaskDependencies, isTaskBlocked, getTaskBlockers, getBlockerIds } = useScrum();
     const { projects, currentProjectId } = useWorkspace();
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const blocked = isTaskBlocked(task.id);
     const blockers = getTaskBlockers(task.id);
     const blockerIds = getBlockerIds(task.id);
+    const assignedRoleId = (task as TaskWithRoleAssignment).assigned_role_id ?? '';
+    const isLaunchDisabled = task.status === 'In Progress' || task.status === 'Done';
     const {
         attributes,
         listeners,
@@ -53,16 +59,20 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: Ta
 
     const handleLaunchClaude = async (e: React.MouseEvent) => {
         e.stopPropagation();
+        if (isLaunchDisabled) return;
         const currentProject = projects.find(p => p.id === currentProjectId);
         if (!currentProject?.local_path) {
             toast.error("ワークスペースのローカルパスが設定されていません。Settingsから設定してください。");
+            return;
+        }
+        if (!assignedRoleId) {
+            toast.error("Claude 実行前に担当ロールを設定してください。");
             return;
         }
 
         try {
             await invoke('execute_claude_task', {
                 taskId: task.id,
-                prompt: `以下のタスクを実装してください。タスクのゴールを達成するためのファイル変更を行ってください。\n\n# タスク名\n${task.title}\n\n# 詳細\n${task.description || '特になし'}\n\n作業を終える前にかならず変更点が意図通りか自己検証し、完了したら終了してください。`,
                 cwd: currentProject.local_path
             });
             await updateTaskStatus(task.id, 'In Progress');
@@ -119,8 +129,15 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: Ta
             <div className="absolute top-2 right-2 flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all z-10 bg-white/80 rounded backdrop-blur-sm p-0.5 shadow-sm">
                 <button
                     onClick={handleLaunchClaude}
-                    className="p-1 text-blue-500 hover:text-white hover:bg-blue-500 rounded transition-colors"
-                    title="開発を実行 (Launch Claude)"
+                    disabled={isLaunchDisabled}
+                    className="p-1 text-blue-500 hover:text-white hover:bg-blue-500 rounded transition-colors disabled:text-gray-300 disabled:hover:bg-transparent disabled:hover:text-gray-300 disabled:cursor-not-allowed"
+                    title={
+                        task.status === 'In Progress'
+                            ? '進行中のタスクは再実行できません'
+                            : task.status === 'Done'
+                                ? '完了済みタスクは再実行できません'
+                                : '開発を実行 (Launch Claude)'
+                    }
                 >
                     <TerminalSquare size={16} />
                 </button>
@@ -141,15 +158,18 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: Ta
                         'IN_PROGRESS': 'In Progress',
                         'DONE': 'Done'
                     };
-                    await updateTask({
-                        ...task,
+                    await invoke('update_task', {
+                        id: task.id,
                         title: data.title,
                         description: data.description,
                         status: statusMap[data.status],
+                        assigneeType: task.assignee_type ?? null,
+                        assignedRoleId: data.assigned_role_id || null,
                         priority: data.priority,
                     });
+                    await refresh();
                     await setTaskDependencies(task.id, data.blocked_by_task_ids);
-                }, [task, updateTask, setTaskDependencies])}
+                }, [task, refresh, setTaskDependencies])}
                 onDelete={useCallback(async () => {
                     await deleteTask(task.id);
                 }, [task.id, deleteTask])}
@@ -162,8 +182,9 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: Ta
                         'DONE': 'Done'
                     }).find(([_, v]) => v === task.status)?.[0] as TaskFormData['status'] || 'TODO',
                     priority: task.priority ?? 3,
+                    assigned_role_id: assignedRoleId,
                     blocked_by_task_ids: blockerIds,
-                }), [task.title, task.description, task.status, task.priority, blockerIds])}
+                }), [task.title, task.description, task.status, task.priority, assignedRoleId, blockerIds])}
                 title="タスクを編集"
                 availableTasks={availableTasks.filter(t => t.id !== task.id)}
             />

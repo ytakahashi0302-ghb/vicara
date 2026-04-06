@@ -7,6 +7,8 @@ import { TaskFormModal, TaskFormData } from '../board/TaskFormModal';
 import { StoryFormModal, StoryFormData } from '../board/StoryFormModal';
 import { useScrum } from '../../context/ScrumContext';
 import { v4 as uuidv4 } from 'uuid';
+import { invoke } from '@tauri-apps/api/core';
+import toast from 'react-hot-toast';
 
 interface StorySwimlaneProps {
     story: Story;
@@ -18,7 +20,7 @@ const STATUSES: Task['status'][] = ['To Do', 'In Progress', 'Done'];
 export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: StorySwimlaneProps) {
     const [isAddTaskModalOpen, setIsAddTaskModalOpen] = useState(false);
     const [isEditStoryModalOpen, setIsEditStoryModalOpen] = useState(false);
-    const { addTask, updateStory, deleteStory, setTaskDependencies } = useScrum();
+    const { refresh, updateStory, deleteStory, setTaskDependencies } = useScrum();
 
     const handleAddTask = useCallback(async (data: TaskFormData) => {
         const statusMap: Record<TaskFormData['status'], Task['status']> = {
@@ -27,19 +29,28 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
             'DONE': 'Done'
         };
         const newId = uuidv4();
-        await addTask({
-            id: newId,
-            story_id: story.id,
-            title: data.title,
-            description: data.description,
-            status: statusMap[data.status],
-            priority: data.priority ?? 3,
-            archived: false
-        });
+        try {
+            await invoke('add_task', {
+                id: newId,
+                projectId: story.project_id,
+                storyId: story.id,
+                title: data.title,
+                description: data.description,
+                status: statusMap[data.status],
+                assigneeType: null,
+                assignedRoleId: data.assigned_role_id || null,
+                priority: data.priority ?? 3
+            });
+            await refresh();
+        } catch (error) {
+            console.error('Failed to add task with role assignment', error);
+            toast.error(`タスクの作成に失敗しました: ${error}`);
+            throw error;
+        }
         if (data.blocked_by_task_ids.length > 0) {
             await setTaskDependencies(newId, data.blocked_by_task_ids);
         }
-    }, [addTask, setTaskDependencies, story.id]);
+    }, [refresh, setTaskDependencies, story.id, story.project_id]);
 
     const handleEditStory = useCallback(async (data: StoryFormData) => {
         await updateStory({

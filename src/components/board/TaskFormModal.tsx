@@ -2,17 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { Modal } from '../ui/Modal';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
+import { invoke } from '@tauri-apps/api/core';
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import toast from 'react-hot-toast';
-import { Task } from '../../types';
+import { Task, TeamConfiguration, TeamRoleSetting } from '../../types';
 
 export interface TaskFormData {
     title: string;
     description: string;
     status: 'TODO' | 'IN_PROGRESS' | 'DONE';
     priority: number;
+    assigned_role_id: string;
     blocked_by_task_ids: string[];
 }
 
@@ -35,11 +37,14 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
     title,
     availableTasks = []
 }) => {
+    const [availableRoles, setAvailableRoles] = useState<TeamRoleSetting[]>([]);
+    const [isLoadingRoles, setIsLoadingRoles] = useState(false);
     const [formData, setFormData] = useState<TaskFormData>({
         title: '',
         description: '',
         status: 'TODO',
         priority: 3,
+        assigned_role_id: '',
         blocked_by_task_ids: []
     });
     const [errors, setErrors] = useState<Partial<Record<keyof TaskFormData, string>>>({});
@@ -53,12 +58,45 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
                 description: initialData?.description || '',
                 status: initialData?.status || 'TODO',
                 priority: initialData?.priority ?? 3,
+                assigned_role_id: initialData?.assigned_role_id || '',
                 blocked_by_task_ids: initialData?.blocked_by_task_ids || []
             });
             setErrors({});
             setMode(initialData?.description ? 'preview' : 'edit');
         }
     }, [isOpen, initialData]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+
+        let cancelled = false;
+
+        const loadRoles = async () => {
+            setIsLoadingRoles(true);
+            try {
+                const config = await invoke<TeamConfiguration>('get_team_configuration');
+                if (!cancelled) {
+                    setAvailableRoles(config.roles);
+                }
+            } catch (error) {
+                console.error('Failed to load team roles', error);
+                if (!cancelled) {
+                    toast.error(`担当ロール一覧の取得に失敗しました: ${error}`);
+                    setAvailableRoles([]);
+                }
+            } finally {
+                if (!cancelled) {
+                    setIsLoadingRoles(false);
+                }
+            }
+        };
+
+        loadRoles();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [isOpen]);
 
     const validate = () => {
         const newErrors: Partial<Record<keyof TaskFormData, string>> = {};
@@ -173,6 +211,28 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
                             <option value={5}>5（最低）</option>
                         </select>
                     </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                    <label className="text-sm font-medium text-gray-700">担当ロール</label>
+                    <select
+                        value={formData.assigned_role_id}
+                        onChange={(e) => setFormData(p => ({ ...p, assigned_role_id: e.target.value }))}
+                        className="flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
+                        disabled={isLoadingRoles}
+                    >
+                        <option value="">未設定</option>
+                        {availableRoles.map(role => (
+                            <option key={role.id} value={role.id}>
+                                {role.name} ({role.model})
+                            </option>
+                        ))}
+                    </select>
+                    <p className="text-xs text-gray-500">
+                        {isLoadingRoles
+                            ? '担当ロールを読み込んでいます...'
+                            : 'Claude 実行時に使用するロールを選択します。'}
+                    </p>
                 </div>
 
                 {availableTasks.length > 0 && (
