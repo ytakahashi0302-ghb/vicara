@@ -119,7 +119,7 @@ export const TerminalDock: React.FC = () => {
                 
                 if (event.payload.success) {
                     await updateTaskStatus(event.payload.task_id, 'Done');
-                    toast.success('タスクが終了しました (Done)');
+                    toast.success('開発が完了しました。レビューをお願いします。');
                 } else {
                     toast.error(`プロセス終了: ${event.payload.reason}`);
                 }
