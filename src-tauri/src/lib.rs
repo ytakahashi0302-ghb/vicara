@@ -7,6 +7,7 @@ mod pty_commands;
 mod pty_manager;
 mod rig_provider;
 mod scaffolding;
+pub mod worktree;
 use tauri_plugin_sql::{Builder as SqlBuilder, Migration, MigrationKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -103,6 +104,7 @@ pub fn run() {
         )
         .manage(pty_manager::PtyManager::new())
         .manage(claude_runner::ClaudeState::new())
+        .manage(worktree::WorktreeState::new())
         .setup(|app| {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -176,7 +178,12 @@ pub fn run() {
             scaffolding::generate_agent_md,
             scaffolding::generate_claude_settings,
             db::get_all_task_dependencies,
-            db::set_task_dependencies
+            db::set_task_dependencies,
+            worktree::create_worktree,
+            worktree::remove_worktree,
+            worktree::merge_worktree,
+            worktree::get_worktree_status,
+            worktree::get_worktree_diff
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
