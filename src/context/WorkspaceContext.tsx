@@ -6,11 +6,20 @@ import toast from 'react-hot-toast';
 interface WorkspaceContextType {
     projects: Project[];
     currentProjectId: string;
+    gitStatus: GitStatus;
     setCurrentProjectId: (id: string) => void;
+    refreshGitStatus: () => Promise<void>;
     fetchProjects: () => Promise<void>;
     addProject: (id: string, name: string, description: string | null) => Promise<void>;
     updateProjectPath: (id: string, localPath: string | null) => Promise<{ success: boolean; has_product_context: boolean; has_architecture: boolean; has_rule: boolean }>;
     deleteProject: (id: string) => Promise<void>;
+}
+
+interface GitStatus {
+    checked: boolean;
+    installed: boolean;
+    version: string | null;
+    message: string | null;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
@@ -18,6 +27,36 @@ const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefin
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const [projects, setProjects] = useState<Project[]>([]);
     const [currentProjectId, setCurrentProjectIdState] = useState<string>('default');
+    const [gitStatus, setGitStatus] = useState<GitStatus>({
+        checked: false,
+        installed: true,
+        version: null,
+        message: null,
+    });
+
+    const refreshGitStatus = useCallback(async () => {
+        try {
+            const result = await invoke<{
+                installed: boolean;
+                version: string | null;
+                message: string | null;
+            }>('check_git_installed');
+            setGitStatus({
+                checked: true,
+                installed: result.installed,
+                version: result.version,
+                message: result.message,
+            });
+        } catch (err) {
+            console.error('Failed to check Git installation', err);
+            setGitStatus({
+                checked: true,
+                installed: false,
+                version: null,
+                message: `Git の確認に失敗しました: ${err}`,
+            });
+        }
+    }, []);
 
     const fetchProjects = useCallback(async () => {
         try {
@@ -41,9 +80,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }, []);
 
     useEffect(() => {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
+        void refreshGitStatus();
         fetchProjects();
-    }, [fetchProjects]);
+    }, [fetchProjects, refreshGitStatus]);
 
     const addProject = useCallback(async (id: string, name: string, description: string | null) => {
         try {
@@ -105,7 +144,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const value = {
         projects,
         currentProjectId,
+        gitStatus,
         setCurrentProjectId,
+        refreshGitStatus,
         fetchProjects,
         addProject,
         updateProjectPath,

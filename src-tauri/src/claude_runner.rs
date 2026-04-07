@@ -1,10 +1,10 @@
-use crate::db;
+use crate::{db, worktree};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 // ---------------------------------------------------------------------------
 // State
@@ -109,6 +109,8 @@ struct ClaudeExitPayload {
     task_id: String,
     success: bool,
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_status: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,15 +155,25 @@ fn sanitize_for_filename(value: &str) -> String {
     }
 }
 
-fn build_task_prompt(task: &db::Task, role: &db::TeamRole) -> String {
+fn build_task_prompt(
+    task: &db::Task,
+    role: &db::TeamRole,
+    additional_context: Option<&str>,
+) -> String {
     let description = task.description.as_deref().unwrap_or("特になし");
+    let extra_context = additional_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("\n# 追加コンテキスト\n{}\n", value))
+        .unwrap_or_default();
 
     format!(
-        "あなたは {} です。\n{}\n\n# タスク名\n{}\n\n# 詳細\n{}\n\n# 作業指示\n- タスクのゴールを達成するための実装を行ってください。\n- 必要なファイル変更を加えてください。\n- 作業を終える前に変更内容が意図通りか自己検証してください。\n- 完了したら終了してください。\n",
+        "あなたは {} です。\n{}\n\n# タスク名\n{}\n\n# 詳細\n{}\n{}# 作業指示\n- タスクのゴールを達成するための実装を行ってください。\n- 必要なファイル変更を加えてください。\n- 作業を終える前に変更内容が意図通りか自己検証してください。\n- 完了したら終了してください。\n",
         role.name.trim(),
         role.system_prompt.trim(),
         task.title.trim(),
-        description.trim()
+        description.trim(),
+        extra_context
     )
 }
 
@@ -289,6 +301,74 @@ fn promote_session_to_running(
     Ok(())
 }
 
+async fn build_exit_payload(
+    app_handle: &AppHandle,
+    task_id: &str,
+    success: bool,
+    reason: String,
+) -> ClaudeExitPayload {
+    if !success {
+        return ClaudeExitPayload {
+            task_id: task_id.to_string(),
+            success,
+            reason,
+            new_status: None,
+        };
+    }
+
+    match db::get_task_by_id(app_handle, task_id).await {
+        Ok(Some(task)) => {
+            if task.status == "Review" {
+                ClaudeExitPayload {
+                    task_id: task_id.to_string(),
+                    success: true,
+                    reason,
+                    new_status: Some("Review".to_string()),
+                }
+            } else {
+                match db::update_task_status(
+                    app_handle.clone(),
+                    task_id.to_string(),
+                    "Review".to_string(),
+                )
+                .await
+                {
+                    Ok(_) => ClaudeExitPayload {
+                        task_id: task_id.to_string(),
+                        success: true,
+                        reason,
+                        new_status: Some("Review".to_string()),
+                    },
+                    Err(error) => ClaudeExitPayload {
+                        task_id: task_id.to_string(),
+                        success: false,
+                        reason: format!(
+                            "Claude の処理は完了しましたが、タスクを Review に更新できませんでした: {}",
+                            error
+                        ),
+                        new_status: None,
+                    },
+                }
+            }
+        }
+        Ok(None) => ClaudeExitPayload {
+            task_id: task_id.to_string(),
+            success: true,
+            reason,
+            new_status: None,
+        },
+        Err(error) => ClaudeExitPayload {
+            task_id: task_id.to_string(),
+            success: false,
+            reason: format!(
+                "Claude の処理は完了しましたが、タスク状態の確認に失敗しました: {}",
+                error
+            ),
+            new_status: None,
+        },
+    }
+}
+
 async fn execute_prompt_request(
     app_handle: AppHandle,
     sessions_arc: Arc<Mutex<HashMap<String, ClaudeSessionEntry>>>,
@@ -354,6 +434,7 @@ async fn execute_prompt_request(
                     task_id: timeout_task_id,
                     success: false,
                     reason: "Timeout reached (180s). Process forcefully killed.".into(),
+                    new_status: None,
                 },
             );
         }
@@ -501,18 +582,15 @@ fn spawn_claude_process(
         {
             let success = session.killer.wait_success();
             cleanup_temp_file(&session.temp_file_path);
-            let _ = app_wait.emit(
-                "claude_cli_exit",
-                ClaudeExitPayload {
-                    task_id: tid_wait,
-                    success,
-                    reason: if success {
-                        "Completed successfully".into()
-                    } else {
-                        "Process exited with error".into()
-                    },
-                },
-            );
+            let reason = if success {
+                "Completed successfully".to_string()
+            } else {
+                "Process exited with error".to_string()
+            };
+            let exit_payload = tauri::async_runtime::block_on(build_exit_payload(
+                &app_wait, &tid_wait, success, reason,
+            ));
+            let _ = app_wait.emit("claude_cli_exit", exit_payload);
         }
     });
 
@@ -620,18 +698,15 @@ fn spawn_claude_process(
         {
             let success = session.killer.wait_success();
             cleanup_temp_file(&session.temp_file_path);
-            let _ = app_clone.emit(
-                "claude_cli_exit",
-                ClaudeExitPayload {
-                    task_id: tid_clone.clone(),
-                    success,
-                    reason: if success {
-                        "Completed successfully".into()
-                    } else {
-                        "Process exited with error".into()
-                    },
-                },
-            );
+            let reason = if success {
+                "Completed successfully".to_string()
+            } else {
+                "Process exited with error".to_string()
+            };
+            let exit_payload = tauri::async_runtime::block_on(build_exit_payload(
+                &app_clone, &tid_clone, success, reason,
+            ));
+            let _ = app_clone.emit("claude_cli_exit", exit_payload);
         }
     });
 
@@ -658,6 +733,7 @@ pub async fn execute_claude_task(
     state: tauri::State<'_, ClaudeState>,
     task_id: String,
     cwd: String,
+    additional_context: Option<String>,
 ) -> Result<(), String> {
     let task = db::get_task_by_id(&app_handle, &task_id)
         .await?
@@ -697,8 +773,67 @@ pub async fn execute_claude_task(
         max_concurrent_agents
     );
 
-    let prompt = build_task_prompt(&task, &role);
-    execute_prompt_request(app_handle, sessions_arc, session_info, prompt, cwd).await
+    let existing_worktree = worktree::get_worktree_status(
+        app_handle.state::<worktree::WorktreeState>(),
+        cwd.clone(),
+        task.id.clone(),
+    )
+    .await?;
+
+    let (worktree_info, created_new_worktree) = match existing_worktree {
+        Some(info) => (info, false),
+        None => (
+            worktree::create_worktree(
+                app_handle.clone(),
+                app_handle.state::<worktree::WorktreeState>(),
+                cwd.clone(),
+                task.id.clone(),
+            )
+            .await?,
+            true,
+        ),
+    };
+
+    db::upsert_worktree_record(
+        &app_handle,
+        db::WorktreeUpsertInput {
+            id: db::get_worktree_by_task_id(&app_handle, &task.id)
+                .await?
+                .map(|record| record.id)
+                .unwrap_or_else(|| format!("worktree-{}", task.id)),
+            task_id: task.id.clone(),
+            project_id: task.project_id.clone(),
+            worktree_path: worktree_info.worktree_path.clone(),
+            branch_name: worktree_info.branch_name.clone(),
+            preview_port: None,
+            preview_pid: None,
+            status: "active".to_string(),
+        },
+    )
+    .await?;
+
+    let prompt = build_task_prompt(&task, &role, additional_context.as_deref());
+    let result = execute_prompt_request(
+        app_handle.clone(),
+        sessions_arc,
+        session_info,
+        prompt,
+        worktree_info.worktree_path.clone(),
+    )
+    .await;
+
+    if result.is_err() && created_new_worktree {
+        let _ = worktree::remove_worktree(
+            app_handle.clone(),
+            app_handle.state::<worktree::PreviewState>(),
+            app_handle.state::<worktree::WorktreeState>(),
+            cwd,
+            task.id.clone(),
+        )
+        .await;
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -729,6 +864,7 @@ pub async fn kill_claude_process(
                 task_id,
                 success: false,
                 reason: "Manually killed by user.".into(),
+                new_status: None,
             },
         )
         .map_err(|e| e.to_string())?;

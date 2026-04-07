@@ -1,3 +1,5 @@
+export type TaskStatus = 'To Do' | 'In Progress' | 'Review' | 'Done';
+
 export interface Project {
     id: string;
     name: string;
@@ -35,14 +37,28 @@ export interface Task {
     story_id: string;
     title: string;
     description: string | null;
-    status: 'To Do' | 'In Progress' | 'Done';
+    status: TaskStatus;
     sprint_id?: string | null;
     project_id: string;
     archived: boolean;
     assignee_type?: string | null;
+    assigned_role_id?: string | null;
     created_at: string;
     updated_at: string;
     priority: number;
+}
+
+export interface WorktreeRecord {
+    id: string;
+    task_id: string;
+    project_id: string;
+    worktree_path: string;
+    branch_name: string;
+    preview_port: number | null;
+    preview_pid: number | null;
+    status: 'active' | 'merging' | 'merged' | 'conflict' | 'removed';
+    created_at: string;
+    updated_at: string;
 }
 
 export interface TaskDependency {

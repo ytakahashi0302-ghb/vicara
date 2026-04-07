@@ -47,6 +47,7 @@ interface ClaudeExitPayload {
     task_id: string;
     success: boolean;
     reason: string;
+    new_status?: string;
 }
 
 const WELCOME_MESSAGE = '\x1b[38;5;12m[MicroScrum AI]\x1b[0m Dev Agent Terminal Ready.\r\n';
@@ -367,8 +368,17 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                 }
 
                 if (event.payload.success) {
-                    await updateTaskStatus(event.payload.task_id, 'Done');
-                    toast.success('開発が完了しました。レビューをお願いします。');
+                    if (event.payload.new_status) {
+                        await updateTaskStatus(
+                            event.payload.task_id,
+                            event.payload.new_status as Parameters<typeof updateTaskStatus>[1],
+                        );
+                        toast.success(
+                            event.payload.new_status === 'Review'
+                                ? '開発が完了しました。タスクをレビュー待ちに移動しました。'
+                                : `開発が完了しました。ステータスを ${event.payload.new_status} に更新しました。`,
+                        );
+                    }
                 } else {
                     toast.error(`プロセス終了: ${event.payload.reason}`);
                 }

@@ -2,6 +2,22 @@
 
 ---
 
+## 実装ステータス（2026-04-07）
+
+- [x] Phase 1: Worktreeライフサイクル管理
+- [x] Phase 2: DBスキーマ拡張 & Reviewステータス遷移
+- [x] Phase 3: プレビュー起動・停止制御
+- [x] Phase 4: Review列UI / 1-Clickレビュー / コンフリクトUI
+- [x] Phase 5: `claude_runner.rs` とWorktree実行統合
+- [x] Hardening: `git.rs` / `preview.rs` / `worktree.rs` への責務分離
+- [x] Hardening: Git未インストール検知とUIガード
+- [x] Hardening: ゼロ構成 `ensure_git_repo` による自動初期化
+- [x] Phase 6.1: バックエンドユニットテスト
+- [ ] Phase 6.2: フロントエンドコンポーネントテスト
+- [ ] Phase 6.3: 統合テスト & クロスプラットフォーム手動検証
+
+---
+
 ## Phase 1: バックエンド基盤 — Worktreeライフサイクル管理
 
 ### Task 1.1: `worktree.rs` モジュール新設 — Worktree生成・削除

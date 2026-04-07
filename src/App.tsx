@@ -1,9 +1,10 @@
 import "./App.css";
 import { useState } from "react";
 import { Toaster } from "react-hot-toast";
-import { Bot, History, Settings } from "lucide-react";
+import { AlertTriangle, Bot, History, RefreshCcw, Settings } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { ScrumProvider } from "./context/ScrumContext";
-import { WorkspaceProvider } from "./context/WorkspaceContext";
+import { WorkspaceProvider, useWorkspace } from "./context/WorkspaceContext";
 import { SprintTimerProvider } from "./context/SprintTimerContext";
 import { ProjectSelector } from "./components/ui/ProjectSelector";
 import { ProjectSettings } from "./components/ui/ProjectSettings";
@@ -139,11 +140,56 @@ function AppHeader({
 }
 
 function AppContent() {
+    const { gitStatus, refreshGitStatus } = useWorkspace();
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
     const [currentView, setCurrentView] = useState<AppView>("kanban");
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [isTerminalMinimized, setIsTerminalMinimized] = useState(true);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    if (gitStatus.checked && !gitStatus.installed) {
+        return (
+            <div className="flex h-screen items-center justify-center bg-slate-100 px-6 py-10">
+                <div className="w-full max-w-2xl rounded-3xl border border-red-200 bg-white p-8 shadow-[0_20px_80px_-30px_rgba(15,23,42,0.35)]">
+                    <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-red-100 text-red-600">
+                        <AlertTriangle size={28} />
+                    </div>
+                    <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+                        MicroScrum AI の利用には Git のインストールが必要です
+                    </h1>
+                    <p className="mt-3 text-sm leading-6 text-slate-600">
+                        Epic 31 以降の MicroScrum AI は、Git Worktree を前提として AI 開発環境を隔離します。
+                        この PC に Git が見つからないため、安全のため処理を中断しています。
+                    </p>
+                    {gitStatus.message && (
+                        <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                            {gitStatus.message}
+                        </div>
+                    )}
+                    <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                        Git をインストール後に「再チェック」を押してください。
+                    </div>
+                    <div className="mt-6 flex flex-wrap gap-3">
+                        <button
+                            type="button"
+                            onClick={() => void openUrl("https://git-scm.com/")}
+                            className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+                        >
+                            Git 公式サイトを開く
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => void refreshGitStatus()}
+                            className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+                        >
+                            <RefreshCcw size={15} className="mr-2" />
+                            再チェック
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="flex h-screen flex-col overflow-hidden bg-slate-100 font-sans">

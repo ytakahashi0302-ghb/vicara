@@ -1,13 +1,13 @@
+use crate::{db, git, preview};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, State};
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+pub use crate::git::WorktreeDiff;
+pub use crate::preview::{PreviewServerInfo, PreviewState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeInfo {
@@ -38,21 +38,8 @@ pub enum MergeResult {
     Error { message: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorktreeDiff {
-    pub summary: String,
-    pub files_changed: Vec<String>,
-    pub diff_text: String,
-}
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
 pub struct WorktreeState {
-    /// task_id -> WorktreeInfo
     worktrees: Mutex<HashMap<String, WorktreeInfo>>,
-    /// Maximum number of concurrent worktrees allowed
     max_worktrees: usize,
 }
 
@@ -65,81 +52,29 @@ impl WorktreeState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const WORKTREE_DIR: &str = ".scrum-ai-worktrees";
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Check if git is available on the system
-fn check_git_available() -> Result<(), String> {
-    Command::new("git")
-        .arg("--version")
-        .output()
-        .map_err(|_| "Gitがインストールされていないか、PATHに見つかりません。Git Worktree機能を使用するにはGitが必要です。".to_string())?;
-    Ok(())
-}
-
-/// Run a git command in the specified directory and return stdout.
-/// Automatically sets config to avoid GPG signing issues in automated contexts.
-fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
-        .env("GIT_CONFIG_VALUE_0", "false")
-        .output()
-        .map_err(|e| format!("Gitコマンドの実行に失敗しました: {}", e))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!(
-            "Git {} が失敗しました: {}",
-            args.first().unwrap_or(&""),
-            stderr
-        ))
-    }
-}
-
-/// Run a git command allowing failure, returning (success, stdout, stderr).
-/// Automatically sets config to avoid GPG signing issues in automated contexts.
-fn run_git_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String, String), String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
-        .env("GIT_CONFIG_VALUE_0", "false")
-        .output()
-        .map_err(|e| format!("Gitコマンドの実行に失敗しました: {}", e))?;
-
-    Ok((
-        output.status.success(),
-        String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        String::from_utf8_lossy(&output.stderr).trim().to_string(),
-    ))
-}
-
-/// Build the worktree path for a given task
 fn worktree_path(project_path: &str, task_id: &str) -> PathBuf {
     Path::new(project_path)
         .join(WORKTREE_DIR)
         .join(format!("task-{}", task_id))
 }
 
-/// Build the branch name for a given task
 fn branch_name(task_id: &str) -> String {
     format!("feature/task-{}", task_id)
 }
 
-/// Ensure `.scrum-ai-worktrees/` is listed in .gitignore
+async fn resolve_worktree_path_for_task(
+    app_handle: &AppHandle,
+    project_path: &str,
+    task_id: &str,
+) -> Result<PathBuf, String> {
+    Ok(db::get_worktree_by_task_id(app_handle, task_id)
+        .await?
+        .map(|record| PathBuf::from(record.worktree_path))
+        .unwrap_or_else(|| worktree_path(project_path, task_id)))
+}
+
 fn ensure_gitignore_entry(project_path: &Path) -> Result<(), String> {
     let gitignore = project_path.join(".gitignore");
     let entry = format!("{}/", WORKTREE_DIR);
@@ -152,7 +87,6 @@ fn ensure_gitignore_entry(project_path: &Path) -> Result<(), String> {
         }
     }
 
-    // Append the entry
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -160,7 +94,6 @@ fn ensure_gitignore_entry(project_path: &Path) -> Result<(), String> {
         .open(&gitignore)
         .map_err(|e| format!(".gitignore書き込みエラー: {}", e))?;
 
-    // Ensure newline before our entry
     if gitignore.exists() {
         let content = std::fs::read_to_string(&gitignore).unwrap_or_default();
         if !content.is_empty() && !content.ends_with('\n') {
@@ -172,8 +105,6 @@ fn ensure_gitignore_entry(project_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Create a symlink for node_modules from the main project to the worktree.
-/// On Windows, falls back to junction if symlink creation fails.
 fn link_node_modules(project_path: &Path, wt_path: &Path) -> Result<(), String> {
     let main_nm = project_path.join("node_modules");
     let wt_nm = wt_path.join("node_modules");
@@ -190,10 +121,8 @@ fn link_node_modules(project_path: &Path, wt_path: &Path) -> Result<(), String> 
 
     #[cfg(windows)]
     {
-        // Try symlink first, fall back to junction
         let symlink_result = std::os::windows::fs::symlink_dir(&main_nm, &wt_nm);
         if symlink_result.is_err() {
-            // Fall back to junction (does not require admin privileges)
             let output = Command::new("cmd")
                 .args([
                     "/C",
@@ -217,61 +146,63 @@ fn link_node_modules(project_path: &Path, wt_path: &Path) -> Result<(), String> 
     Ok(())
 }
 
-/// Check if the worktree has uncommitted changes and auto-commit them
-fn auto_commit_if_needed(wt_path: &Path) -> Result<bool, String> {
-    // Check for uncommitted changes
-    let (success, stdout, _) = run_git_raw(wt_path, &["status", "--porcelain"])?;
-    if !success || stdout.is_empty() {
-        return Ok(false);
+fn remove_worktree_node_modules_link(wt_path: &Path) {
+    let wt_nm = wt_path.join("node_modules");
+    if wt_nm.is_symlink() || (cfg!(windows) && wt_nm.exists()) {
+        let _ = if wt_nm.is_symlink() {
+            std::fs::remove_file(&wt_nm)
+        } else {
+            std::fs::remove_dir(&wt_nm)
+        };
     }
-
-    // Stage all changes
-    run_git(wt_path, &["add", "-A"])?;
-
-    // Commit
-    run_git(
-        wt_path,
-        &["commit", "-m", "[MicroScrum AI] 自動コミット: エージェント作業完了"],
-    )?;
-
-    Ok(true)
 }
 
-/// Parse conflicting file paths from git merge stderr/stdout
-fn parse_conflict_files(merge_output: &str) -> Vec<String> {
-    let mut files = Vec::new();
-    for line in merge_output.lines() {
-        // Pattern: "CONFLICT (content): Merge conflict in <file>"
-        if let Some(pos) = line.find("Merge conflict in ") {
-            let file = line[pos + "Merge conflict in ".len()..].trim();
-            files.push(file.to_string());
-        }
-        // Pattern: "CONFLICT (add/add): Merge conflict in <file>"
-        // Already covered above
-    }
-    files
+async fn upsert_worktree_record(
+    app_handle: &AppHandle,
+    task_id: &str,
+    worktree_path: &Path,
+    branch_name: &str,
+    preview_port: Option<i32>,
+    preview_pid: Option<i64>,
+    status: &str,
+) -> Result<(), String> {
+    let task = db::get_task_by_id(app_handle, task_id)
+        .await?
+        .ok_or_else(|| format!("task_id={} のタスクが見つかりません", task_id))?;
+
+    let record_id = db::get_worktree_by_task_id(app_handle, task_id)
+        .await?
+        .map(|record| record.id)
+        .unwrap_or_else(|| format!("worktree-{}", task_id));
+
+    db::upsert_worktree_record(
+        app_handle,
+        db::WorktreeUpsertInput {
+            id: record_id,
+            task_id: task_id.to_string(),
+            project_id: task.project_id,
+            worktree_path: worktree_path.to_string_lossy().to_string(),
+            branch_name: branch_name.to_string(),
+            preview_port,
+            preview_pid,
+            status: status.to_string(),
+        },
+    )
+    .await?;
+
+    Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Tauri Commands
-// ---------------------------------------------------------------------------
-
-/// Create a new git worktree for a task
 #[tauri::command]
 pub async fn create_worktree(
+    app_handle: AppHandle,
     state: State<'_, WorktreeState>,
     project_path: String,
     task_id: String,
 ) -> Result<WorktreeInfo, String> {
-    check_git_available()?;
-
     let project = Path::new(&project_path);
-    if !project.join(".git").exists() && !project.join(".git").is_file() {
-        // Also check if it's a file (submodule/worktree case)
-        return Err("指定されたプロジェクトパスはGitリポジトリではありません。".to_string());
-    }
+    git::ensure_git_repo(project)?;
 
-    // Check concurrency limit
     {
         let worktrees = state
             .worktrees
@@ -279,7 +210,7 @@ pub async fn create_worktree(
             .map_err(|e| format!("State lock error: {}", e))?;
         let active_count = worktrees
             .values()
-            .filter(|w| w.status == WorktreeStatus::Active)
+            .filter(|worktree| worktree.status == WorktreeStatus::Active)
             .count();
         if active_count >= state.max_worktrees {
             return Err(format!(
@@ -287,7 +218,6 @@ pub async fn create_worktree(
                 state.max_worktrees
             ));
         }
-        // Check for duplicate
         if let Some(existing) = worktrees.get(&task_id) {
             if existing.status == WorktreeStatus::Active {
                 return Err(format!(
@@ -301,18 +231,13 @@ pub async fn create_worktree(
     let wt_path = worktree_path(&project_path, &task_id);
     let br_name = branch_name(&task_id);
 
-    // Ensure parent directory exists
     let parent = wt_path
         .parent()
         .ok_or("ワークツリーの親ディレクトリが不正です")?;
-    std::fs::create_dir_all(parent)
-        .map_err(|e| format!("ディレクトリ作成エラー: {}", e))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("ディレクトリ作成エラー: {}", e))?;
 
-    // Ensure .gitignore entry
     ensure_gitignore_entry(project)?;
-
-    // Create worktree: git worktree add <path> -b <branch> main
-    run_git(
+    git::run_git(
         project,
         &[
             "worktree",
@@ -323,8 +248,6 @@ pub async fn create_worktree(
             "main",
         ],
     )?;
-
-    // Link node_modules from main project
     link_node_modules(project, &wt_path)?;
 
     let info = WorktreeInfo {
@@ -334,7 +257,6 @@ pub async fn create_worktree(
         status: WorktreeStatus::Active,
     };
 
-    // Register in state
     {
         let mut worktrees = state
             .worktrees
@@ -343,12 +265,24 @@ pub async fn create_worktree(
         worktrees.insert(task_id, info.clone());
     }
 
+    let _ = upsert_worktree_record(
+        &app_handle,
+        &info.task_id,
+        Path::new(&info.worktree_path),
+        &info.branch_name,
+        None,
+        None,
+        "active",
+    )
+    .await;
+
     Ok(info)
 }
 
-/// Remove a worktree and its associated branch
 #[tauri::command]
 pub async fn remove_worktree(
+    app_handle: AppHandle,
+    preview_state: State<'_, PreviewState>,
     state: State<'_, WorktreeState>,
     project_path: String,
     task_id: String,
@@ -357,35 +291,24 @@ pub async fn remove_worktree(
     let wt_path = worktree_path(&project_path, &task_id);
     let br_name = branch_name(&task_id);
 
-    // Remove node_modules symlink first to avoid git worktree remove issues
-    let wt_nm = wt_path.join("node_modules");
-    if wt_nm.is_symlink() || (cfg!(windows) && wt_nm.exists()) {
-        // On Windows, junction is detected as dir, remove with remove_dir
-        let _ = if wt_nm.is_symlink() {
-            std::fs::remove_file(&wt_nm)
-        } else {
-            std::fs::remove_dir(&wt_nm)
-        };
-    }
+    let _ = preview_state.stop_server(&task_id);
+    remove_worktree_node_modules_link(&wt_path);
 
-    // Remove worktree (force to handle unclean state)
-    let _ = run_git(project, &["worktree", "remove", &wt_path.to_string_lossy(), "--force"]);
+    let _ = git::run_git(
+        project,
+        &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
+    );
 
-    // If directory still exists, clean up manually
     if wt_path.exists() {
         let _ = std::fs::remove_dir_all(&wt_path);
     }
 
-    // Prune worktree references
-    let _ = run_git(project, &["worktree", "prune"]);
+    let _ = git::run_git(project, &["worktree", "prune"]);
 
-    // Delete the branch (safe delete first, force if needed)
-    let delete_result = run_git(project, &["branch", "-d", &br_name]);
-    if delete_result.is_err() {
-        let _ = run_git(project, &["branch", "-D", &br_name]);
+    if git::run_git(project, &["branch", "-d", &br_name]).is_err() {
+        let _ = git::run_git(project, &["branch", "-D", &br_name]);
     }
 
-    // Update state
     {
         let mut worktrees = state
             .worktrees
@@ -397,12 +320,15 @@ pub async fn remove_worktree(
         worktrees.remove(&task_id);
     }
 
+    let _ = db::update_worktree_record_state(&app_handle, &task_id, None, None, "removed").await;
+
     Ok(())
 }
 
-/// Merge a task's worktree branch into main and clean up
 #[tauri::command]
 pub async fn merge_worktree(
+    app_handle: AppHandle,
+    preview_state: State<'_, PreviewState>,
     state: State<'_, WorktreeState>,
     project_path: String,
     task_id: String,
@@ -411,7 +337,6 @@ pub async fn merge_worktree(
     let wt_path = worktree_path(&project_path, &task_id);
     let br_name = branch_name(&task_id);
 
-    // Update state to merging
     {
         let mut worktrees = state
             .worktrees
@@ -422,14 +347,11 @@ pub async fn merge_worktree(
         }
     }
 
-    // Auto-commit any uncommitted changes in the worktree
     if wt_path.exists() {
-        let _ = auto_commit_if_needed(&wt_path);
+        let _ = git::auto_commit_if_needed(&wt_path);
     }
 
-    // Attempt merge on main
-    // First, ensure we are on main in the project root
-    let current_branch = run_git(project, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let current_branch = git::run_git(project, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     if current_branch != "main" {
         return Err(format!(
             "プロジェクトルートが main ブランチ上にありません（現在: {}）。マージ前に main へ切り替えてください。",
@@ -437,7 +359,7 @@ pub async fn merge_worktree(
         ));
     }
 
-    let (success, stdout, stderr) = run_git_raw(
+    let (success, stdout, stderr) = git::run_git_raw(
         project,
         &[
             "merge",
@@ -449,12 +371,9 @@ pub async fn merge_worktree(
     )?;
 
     if !success {
-        // Merge conflict: abort and report
-        let _ = run_git(project, &["merge", "--abort"]);
+        let _ = git::run_git(project, &["merge", "--abort"]);
+        let conflicting_files = git::parse_conflict_files(&format!("{}\n{}", stdout, stderr));
 
-        let conflicting_files = parse_conflict_files(&format!("{}\n{}", stdout, stderr));
-
-        // Update state to conflict
         {
             let mut worktrees = state
                 .worktrees
@@ -465,28 +384,25 @@ pub async fn merge_worktree(
             }
         }
 
+        let _ =
+            db::update_worktree_record_state(&app_handle, &task_id, None, None, "conflict").await;
+
         return Ok(MergeResult::Conflict { conflicting_files });
     }
 
-    // Merge succeeded — clean up worktree and branch
-    // Remove node_modules symlink first
-    let wt_nm = wt_path.join("node_modules");
-    if wt_nm.is_symlink() || (cfg!(windows) && wt_nm.exists()) {
-        let _ = if wt_nm.is_symlink() {
-            std::fs::remove_file(&wt_nm)
-        } else {
-            std::fs::remove_dir(&wt_nm)
-        };
-    }
+    let _ = preview_state.stop_server(&task_id);
+    remove_worktree_node_modules_link(&wt_path);
 
-    let _ = run_git(project, &["worktree", "remove", &wt_path.to_string_lossy(), "--force"]);
+    let _ = git::run_git(
+        project,
+        &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
+    );
     if wt_path.exists() {
         let _ = std::fs::remove_dir_all(&wt_path);
     }
-    let _ = run_git(project, &["worktree", "prune"]);
-    let _ = run_git(project, &["branch", "-d", &br_name]);
+    let _ = git::run_git(project, &["worktree", "prune"]);
+    let _ = git::run_git(project, &["branch", "-d", &br_name]);
 
-    // Update state
     {
         let mut worktrees = state
             .worktrees
@@ -495,17 +411,18 @@ pub async fn merge_worktree(
         worktrees.remove(&task_id);
     }
 
+    let _ = db::update_worktree_record_state(&app_handle, &task_id, None, None, "merged").await;
+    let _ = db::update_task_status(app_handle, task_id, "Done".to_string()).await;
+
     Ok(MergeResult::Success)
 }
 
-/// Get the status of a worktree for a task
 #[tauri::command]
 pub async fn get_worktree_status(
     state: State<'_, WorktreeState>,
     project_path: String,
     task_id: String,
 ) -> Result<Option<WorktreeInfo>, String> {
-    // Check in-memory state first
     {
         let worktrees = state
             .worktrees
@@ -516,23 +433,20 @@ pub async fn get_worktree_status(
         }
     }
 
-    // Check filesystem as fallback
     let wt_path = worktree_path(&project_path, &task_id);
     if wt_path.exists() {
         let br_name = branch_name(&task_id);
-        let info = WorktreeInfo {
+        return Ok(Some(WorktreeInfo {
             task_id,
             worktree_path: wt_path.to_string_lossy().to_string(),
             branch_name: br_name,
             status: WorktreeStatus::Active,
-        };
-        return Ok(Some(info));
+        }));
     }
 
     Ok(None)
 }
 
-/// Get diff between the worktree's branch and main
 #[tauri::command]
 pub async fn get_worktree_diff(
     project_path: String,
@@ -542,40 +456,88 @@ pub async fn get_worktree_diff(
     let wt_path = worktree_path(&project_path, &task_id);
     let br_name = branch_name(&task_id);
 
-    // Auto-commit pending changes so they show in diff
     if wt_path.exists() {
-        let _ = auto_commit_if_needed(&wt_path);
+        let _ = git::auto_commit_if_needed(&wt_path);
     }
 
-    // Get diff stat (summary)
-    let summary = run_git(project, &["diff", "--stat", &format!("main...{}", br_name)])
-        .unwrap_or_default();
-
-    // Get changed file names
-    let files_output = run_git(
-        project,
-        &["diff", "--name-only", &format!("main...{}", br_name)],
-    )
-    .unwrap_or_default();
-    let files_changed: Vec<String> = files_output
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect();
-
-    // Get full diff
-    let diff_text = run_git(project, &["diff", &format!("main...{}", br_name)])
-        .unwrap_or_default();
-
-    Ok(WorktreeDiff {
-        summary,
-        files_changed,
-        diff_text,
-    })
+    Ok(git::get_worktree_diff(project, &br_name))
 }
 
-/// Detect and clean up orphaned worktrees at startup.
-/// Call this during app initialization.
+#[tauri::command]
+pub async fn start_preview_server(
+    app_handle: AppHandle,
+    preview_state: State<'_, PreviewState>,
+    project_path: String,
+    task_id: String,
+    command: Option<String>,
+) -> Result<PreviewServerInfo, String> {
+    let wt_path = resolve_worktree_path_for_task(&app_handle, &project_path, &task_id).await?;
+
+    if !wt_path.exists() {
+        return Err(
+            "対象のワークツリーが見つかりません。先に Claude 実行で worktree を生成してください。"
+                .to_string(),
+        );
+    }
+
+    let info = preview::start_preview_for_task(&preview_state, &task_id, &wt_path, command)?;
+    upsert_worktree_record(
+        &app_handle,
+        &task_id,
+        &wt_path,
+        &branch_name(&task_id),
+        Some(info.port as i32),
+        Some(info.pid as i64),
+        "active",
+    )
+    .await?;
+
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn stop_preview_server(
+    app_handle: AppHandle,
+    preview_state: State<'_, PreviewState>,
+    task_id: String,
+) -> Result<bool, String> {
+    let stopped = preview_state.stop_server(&task_id)?.is_some();
+    let _ = db::update_worktree_record_state(&app_handle, &task_id, None, None, "active").await;
+    Ok(stopped)
+}
+
+#[tauri::command]
+pub async fn open_preview_in_browser(app_handle: AppHandle, port: u16) -> Result<(), String> {
+    preview::open_preview_in_browser(&app_handle, port)
+}
+
+#[tauri::command]
+pub async fn open_static_preview(
+    app_handle: AppHandle,
+    project_path: String,
+    task_id: String,
+) -> Result<String, String> {
+    let wt_path = resolve_worktree_path_for_task(&app_handle, &project_path, &task_id).await?;
+
+    if !wt_path.exists() {
+        return Err(
+            "対象のワークツリーが見つかりません。先に Claude 実行で worktree を生成してください。"
+                .to_string(),
+        );
+    }
+
+    let index_path = wt_path.join("index.html");
+    if !index_path.exists() {
+        return Err(
+            "ワークツリー内に index.html が見つかりません。静的サイト構成か確認してください。"
+                .to_string(),
+        );
+    }
+
+    preview::open_local_path(&app_handle, &index_path)
+        .map_err(|e| format!("index.html を開けませんでした: {}", e))
+}
+
 pub fn cleanup_orphaned_worktrees(project_path: &str) -> Vec<String> {
     let project = Path::new(project_path);
     let worktree_base = project.join(WORKTREE_DIR);
@@ -585,10 +547,8 @@ pub fn cleanup_orphaned_worktrees(project_path: &str) -> Vec<String> {
         return cleaned;
     }
 
-    // List actual worktrees via git
-    let _ = run_git(project, &["worktree", "prune"]);
+    let _ = git::run_git(project, &["worktree", "prune"]);
 
-    // Scan the directory for any leftover task folders
     let entries = match std::fs::read_dir(&worktree_base) {
         Ok(entries) => entries,
         Err(_) => return cleaned,
@@ -605,46 +565,29 @@ pub fn cleanup_orphaned_worktrees(project_path: &str) -> Vec<String> {
             Err(_) => continue,
         };
 
-        // Extract task_id from dir name (task-<id>)
         let task_id = if let Some(id) = dir_name.strip_prefix("task-") {
             id.to_string()
         } else {
             continue;
         };
 
-        // Remove node_modules link first
-        let nm = path.join("node_modules");
-        if nm.is_symlink() || (cfg!(windows) && nm.exists()) {
-            let _ = if nm.is_symlink() {
-                std::fs::remove_file(&nm)
-            } else {
-                std::fs::remove_dir(&nm)
-            };
-        }
-
-        // Try to remove via git worktree remove
-        let _ = run_git(
+        remove_worktree_node_modules_link(&path);
+        let _ = git::run_git(
             project,
             &["worktree", "remove", &path.to_string_lossy(), "--force"],
         );
 
-        // If still there, force remove
         if path.exists() {
             let _ = std::fs::remove_dir_all(&path);
         }
 
-        // Remove branch if it exists
-        let br = branch_name(&task_id);
-        let _ = run_git(project, &["branch", "-D", &br]);
-
+        let _ = git::run_git(project, &["branch", "-D", &branch_name(&task_id)]);
         cleaned.push(format!("task-{}", task_id));
         log::info!("Orphaned worktree cleaned: task-{}", task_id);
     }
 
-    // Final prune
-    let _ = run_git(project, &["worktree", "prune"]);
+    let _ = git::run_git(project, &["worktree", "prune"]);
 
-    // Remove the base dir if empty
     if let Ok(mut entries) = std::fs::read_dir(&worktree_base) {
         if entries.next().is_none() {
             let _ = std::fs::remove_dir(&worktree_base);
@@ -654,73 +597,38 @@ pub fn cleanup_orphaned_worktrees(project_path: &str) -> Vec<String> {
     cleaned
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::process::Command;
 
-    /// Create a temporary git repo for testing
     fn setup_test_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("Failed to create temp dir");
         let path = dir.path();
 
-        // git init with main branch
-        Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(path)
-            .output()
-            .expect("git init failed");
-
-        // Configure git user for commits
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(path)
-            .output()
-            .expect("git config failed");
-
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(path)
-            .output()
-            .expect("git config failed");
-
-        Command::new("git")
-            .args(["config", "commit.gpgsign", "false"])
-            .current_dir(path)
-            .output()
+        git::run_git(path, &["init", "-b", "main"]).expect("git init failed");
+        git::run_git(path, &["config", "user.email", "test@test.com"]).expect("git config failed");
+        git::run_git(path, &["config", "user.name", "Test"]).expect("git config failed");
+        git::run_git(path, &["config", "commit.gpgsign", "false"])
             .expect("git config gpgsign failed");
 
-        // Create initial commit
         fs::write(path.join("README.md"), "# Test Project\n").expect("write failed");
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(path)
-            .output()
-            .expect("git add failed");
-        Command::new("git")
-            .args(["commit", "-m", "Initial commit"])
-            .current_dir(path)
-            .output()
-            .expect("git commit failed");
+        git::run_git(path, &["add", "."]).expect("git add failed");
+        git::run_git(path, &["commit", "-m", "Initial commit"]).expect("git commit failed");
 
         dir
     }
 
     #[test]
     fn test_check_git_available() {
-        assert!(check_git_available().is_ok());
+        assert!(git::check_git_available().is_ok());
     }
 
     #[test]
     fn test_worktree_path_construction() {
-        let p = worktree_path("/project", "abc123");
+        let path = worktree_path("/project", "abc123");
         assert_eq!(
-            p,
+            path,
             PathBuf::from("/project/.scrum-ai-worktrees/task-abc123")
         );
     }
@@ -735,20 +643,16 @@ mod tests {
         let repo = setup_test_repo();
         let project_path = repo.path().to_string_lossy().to_string();
         let task_id = "test-001";
-
-        // Create worktree
         let wt_path = worktree_path(&project_path, task_id);
         let br_name = branch_name(task_id);
 
         ensure_gitignore_entry(repo.path()).expect("gitignore failed");
 
-        // Verify .gitignore contains entry
         let gitignore = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
         assert!(gitignore.contains(".scrum-ai-worktrees/"));
 
-        // Create worktree via git directly (testing the helper functions)
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
-        run_git(
+        git::run_git(
             repo.path(),
             &[
                 "worktree",
@@ -764,20 +668,18 @@ mod tests {
         assert!(wt_path.exists());
         assert!(wt_path.join("README.md").exists());
 
-        // Verify branch was created
-        let branches = run_git(repo.path(), &["branch"]).unwrap();
+        let branches = git::run_git(repo.path(), &["branch"]).unwrap();
         assert!(branches.contains("feature/task-test-001"));
 
-        // Remove worktree
-        let _ = run_git(
+        let _ = git::run_git(
             repo.path(),
             &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
         );
-        let _ = run_git(repo.path(), &["worktree", "prune"]);
-        let _ = run_git(repo.path(), &["branch", "-D", &br_name]);
+        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
+        let _ = git::run_git(repo.path(), &["branch", "-D", &br_name]);
 
         assert!(!wt_path.exists());
-        let branches = run_git(repo.path(), &["branch"]).unwrap();
+        let branches = git::run_git(repo.path(), &["branch"]).unwrap();
         assert!(!branches.contains("feature/task-test-001"));
     }
 
@@ -789,9 +691,8 @@ mod tests {
         let wt_path = worktree_path(&project_path, task_id);
         let br_name = branch_name(task_id);
 
-        // Create worktree
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
-        run_git(
+        git::run_git(
             repo.path(),
             &[
                 "worktree",
@@ -804,13 +705,11 @@ mod tests {
         )
         .expect("worktree add failed");
 
-        // Make a change in the worktree
         fs::write(wt_path.join("new_file.txt"), "Hello from worktree\n").unwrap();
-        run_git(&wt_path, &["add", "."]).unwrap();
-        run_git(&wt_path, &["commit", "-m", "Add new file"]).unwrap();
+        git::run_git(&wt_path, &["add", "."]).unwrap();
+        git::run_git(&wt_path, &["commit", "-m", "Add new file"]).unwrap();
 
-        // Merge into main
-        let (success, _, stderr) = run_git_raw(
+        let (success, _, stderr) = git::run_git_raw(
             repo.path(),
             &[
                 "merge",
@@ -823,17 +722,14 @@ mod tests {
         .unwrap();
 
         assert!(success, "Merge failed: {}", stderr);
-
-        // Verify file exists on main
         assert!(repo.path().join("new_file.txt").exists());
 
-        // Clean up
-        let _ = run_git(
+        let _ = git::run_git(
             repo.path(),
             &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
         );
-        let _ = run_git(repo.path(), &["worktree", "prune"]);
-        let _ = run_git(repo.path(), &["branch", "-d", &br_name]);
+        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
+        let _ = git::run_git(repo.path(), &["branch", "-d", &br_name]);
     }
 
     #[test]
@@ -844,9 +740,8 @@ mod tests {
         let wt_path = worktree_path(&project_path, task_id);
         let br_name = branch_name(task_id);
 
-        // Create worktree
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
-        run_git(
+        git::run_git(
             repo.path(),
             &[
                 "worktree",
@@ -859,18 +754,15 @@ mod tests {
         )
         .expect("worktree add failed");
 
-        // Make a change in the worktree
         fs::write(wt_path.join("README.md"), "Changed by worktree\n").unwrap();
-        run_git(&wt_path, &["add", "."]).unwrap();
-        run_git(&wt_path, &["commit", "-m", "Worktree change"]).unwrap();
+        git::run_git(&wt_path, &["add", "."]).unwrap();
+        git::run_git(&wt_path, &["commit", "-m", "Worktree change"]).unwrap();
 
-        // Make a conflicting change on main
         fs::write(repo.path().join("README.md"), "Changed on main\n").unwrap();
-        run_git(repo.path(), &["add", "."]).unwrap();
-        run_git(repo.path(), &["commit", "-m", "Main change"]).unwrap();
+        git::run_git(repo.path(), &["add", "."]).unwrap();
+        git::run_git(repo.path(), &["commit", "-m", "Main change"]).unwrap();
 
-        // Attempt merge — should conflict
-        let (success, stdout, stderr) = run_git_raw(
+        let (success, stdout, stderr) = git::run_git_raw(
             repo.path(),
             &["merge", "--no-ff", "-m", "Merge test", &br_name],
         )
@@ -878,23 +770,20 @@ mod tests {
 
         assert!(!success, "Expected merge to fail with conflict");
 
-        let conflict_files = parse_conflict_files(&format!("{}\n{}", stdout, stderr));
+        let conflict_files = git::parse_conflict_files(&format!("{}\n{}", stdout, stderr));
         assert!(
             conflict_files.contains(&"README.md".to_string()),
             "Expected README.md in conflict files, got: {:?}",
             conflict_files
         );
 
-        // Abort merge
-        let _ = run_git(repo.path(), &["merge", "--abort"]);
-
-        // Clean up
-        let _ = run_git(
+        let _ = git::run_git(repo.path(), &["merge", "--abort"]);
+        let _ = git::run_git(
             repo.path(),
             &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
         );
-        let _ = run_git(repo.path(), &["worktree", "prune"]);
-        let _ = run_git(repo.path(), &["branch", "-D", &br_name]);
+        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
+        let _ = git::run_git(repo.path(), &["branch", "-D", &br_name]);
     }
 
     #[test]
@@ -906,7 +795,7 @@ mod tests {
         let br_name = branch_name(task_id);
 
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
-        run_git(
+        git::run_git(
             repo.path(),
             &[
                 "worktree",
@@ -919,26 +808,22 @@ mod tests {
         )
         .unwrap();
 
-        // No changes — should return false
-        let committed = auto_commit_if_needed(&wt_path).unwrap();
+        let committed = git::auto_commit_if_needed(&wt_path).unwrap();
         assert!(!committed);
 
-        // Add a file — should auto-commit
         fs::write(wt_path.join("auto.txt"), "auto\n").unwrap();
-        let committed = auto_commit_if_needed(&wt_path).unwrap();
+        let committed = git::auto_commit_if_needed(&wt_path).unwrap();
         assert!(committed);
 
-        // Verify the commit was made
-        let log = run_git(&wt_path, &["log", "--oneline", "-1"]).unwrap();
+        let log = git::run_git(&wt_path, &["log", "--oneline", "-1"]).unwrap();
         assert!(log.contains("自動コミット"));
 
-        // Clean up
-        let _ = run_git(
+        let _ = git::run_git(
             repo.path(),
             &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
         );
-        let _ = run_git(repo.path(), &["worktree", "prune"]);
-        let _ = run_git(repo.path(), &["branch", "-D", &br_name]);
+        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
+        let _ = git::run_git(repo.path(), &["branch", "-D", &br_name]);
     }
 
     #[test]
@@ -949,14 +834,12 @@ mod tests {
         let wt_path = worktree_path(&project_path, task_id);
         let br_name = branch_name(task_id);
 
-        // Create a fake node_modules in project root
         let nm_dir = repo.path().join("node_modules");
         fs::create_dir_all(nm_dir.join("some-package")).unwrap();
         fs::write(nm_dir.join("some-package/index.js"), "module.exports = {};").unwrap();
 
-        // Create worktree
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
-        run_git(
+        git::run_git(
             repo.path(),
             &[
                 "worktree",
@@ -969,10 +852,8 @@ mod tests {
         )
         .unwrap();
 
-        // Link node_modules
         link_node_modules(repo.path(), &wt_path).expect("link_node_modules failed");
 
-        // Verify symlink exists and points to correct location
         let wt_nm = wt_path.join("node_modules");
         assert!(wt_nm.exists(), "node_modules symlink should exist");
         assert!(
@@ -980,28 +861,25 @@ mod tests {
             "Should be able to access files through symlink"
         );
 
-        // Clean up symlink first
         let _ = std::fs::remove_file(&wt_nm);
-        let _ = run_git(
+        let _ = git::run_git(
             repo.path(),
             &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
         );
-        let _ = run_git(repo.path(), &["worktree", "prune"]);
-        let _ = run_git(repo.path(), &["branch", "-D", &br_name]);
+        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
+        let _ = git::run_git(repo.path(), &["branch", "-D", &br_name]);
     }
 
     #[test]
     fn test_cleanup_orphaned_worktrees() {
         let repo = setup_test_repo();
         let project_path = repo.path().to_string_lossy().to_string();
-
-        // Create a worktree then simulate orphaning by deleting only the git reference
         let task_id = "orphan-001";
         let wt_path = worktree_path(&project_path, task_id);
         let br_name = branch_name(task_id);
 
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
-        run_git(
+        git::run_git(
             repo.path(),
             &[
                 "worktree",
@@ -1016,7 +894,6 @@ mod tests {
 
         assert!(wt_path.exists());
 
-        // Run cleanup
         let cleaned = cleanup_orphaned_worktrees(&project_path);
 
         assert!(
@@ -1031,14 +908,13 @@ mod tests {
     fn test_ensure_gitignore_idempotent() {
         let repo = setup_test_repo();
 
-        // Call twice — should not duplicate entry
         ensure_gitignore_entry(repo.path()).unwrap();
         ensure_gitignore_entry(repo.path()).unwrap();
 
         let content = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
         let count = content
             .lines()
-            .filter(|l| l.trim() == ".scrum-ai-worktrees/")
+            .filter(|line| line.trim() == ".scrum-ai-worktrees/")
             .count();
         assert_eq!(count, 1, "Should appear exactly once, got: {}", count);
     }
@@ -1052,7 +928,7 @@ mod tests {
         let br_name = branch_name(task_id);
 
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
-        run_git(
+        git::run_git(
             repo.path(),
             &[
                 "worktree",
@@ -1065,30 +941,55 @@ mod tests {
         )
         .unwrap();
 
-        // Make a change
         fs::write(wt_path.join("diff_file.txt"), "diff content\n").unwrap();
-        run_git(&wt_path, &["add", "."]).unwrap();
-        run_git(&wt_path, &["commit", "-m", "Add diff file"]).unwrap();
+        git::run_git(&wt_path, &["add", "."]).unwrap();
+        git::run_git(&wt_path, &["commit", "-m", "Add diff file"]).unwrap();
 
-        // Get diff summary
-        let summary =
-            run_git(repo.path(), &["diff", "--stat", &format!("main...{}", br_name)]).unwrap();
-        assert!(
-            summary.contains("diff_file.txt"),
-            "Diff summary should contain diff_file.txt"
-        );
+        let diff = git::get_worktree_diff(repo.path(), &br_name);
+        assert!(diff.summary.contains("diff_file.txt"));
+        assert!(diff.files_changed.contains(&"diff_file.txt".to_string()));
 
-        let files =
-            run_git(repo.path(), &["diff", "--name-only", &format!("main...{}", br_name)])
-                .unwrap();
-        assert!(files.contains("diff_file.txt"));
-
-        // Clean up
-        let _ = run_git(
+        let _ = git::run_git(
             repo.path(),
             &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
         );
-        let _ = run_git(repo.path(), &["worktree", "prune"]);
-        let _ = run_git(repo.path(), &["branch", "-D", &br_name]);
+        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
+        let _ = git::run_git(repo.path(), &["branch", "-D", &br_name]);
+    }
+
+    #[test]
+    fn test_ensure_git_repo_initializes_repository_and_tracks_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
+
+        git::ensure_git_repo(dir.path()).unwrap();
+
+        assert!(dir.path().join(".git").exists());
+        assert_eq!(
+            git::run_git(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(),
+            "main"
+        );
+        assert!(
+            git::run_git(dir.path(), &["ls-files"])
+                .unwrap()
+                .contains("index.html"),
+            "index.html should be included in the initial commit"
+        );
+    }
+
+    #[test]
+    fn test_ensure_git_repo_creates_empty_commit_for_existing_repo_without_commits() {
+        let dir = tempfile::tempdir().unwrap();
+
+        git::run_git(dir.path(), &["init"]).unwrap();
+        git::ensure_git_repo(dir.path()).unwrap();
+
+        assert_eq!(
+            git::run_git(dir.path(), &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap(),
+            "main"
+        );
+        assert!(git::run_git(dir.path(), &["log", "--oneline"])
+            .unwrap()
+            .contains("Initial commit"));
     }
 }

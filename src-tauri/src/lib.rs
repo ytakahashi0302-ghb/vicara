@@ -2,7 +2,9 @@ mod ai;
 mod ai_tools;
 mod claude_runner;
 mod db;
+mod git;
 mod inception;
+mod preview;
 mod pty_commands;
 mod pty_manager;
 mod rig_provider;
@@ -91,6 +93,12 @@ pub fn run() {
             sql: include_str!("../migrations/13_task_role_assignment.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 14,
+            description: "worktrees_review",
+            sql: include_str!("../migrations/14_worktrees_review.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -104,6 +112,7 @@ pub fn run() {
         )
         .manage(pty_manager::PtyManager::new())
         .manage(claude_runner::ClaudeState::new())
+        .manage(worktree::PreviewState::new())
         .manage(worktree::WorktreeState::new())
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -131,6 +140,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ai::generate_tasks_from_story,
             ai::refine_idea,
+            git::check_git_installed,
             db::get_projects,
             db::create_project,
             db::update_project,
@@ -179,11 +189,16 @@ pub fn run() {
             scaffolding::generate_claude_settings,
             db::get_all_task_dependencies,
             db::set_task_dependencies,
+            db::get_worktree_record,
             worktree::create_worktree,
             worktree::remove_worktree,
             worktree::merge_worktree,
             worktree::get_worktree_status,
-            worktree::get_worktree_diff
+            worktree::get_worktree_diff,
+            worktree::start_preview_server,
+            worktree::stop_preview_server,
+            worktree::open_preview_in_browser,
+            worktree::open_static_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

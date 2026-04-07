@@ -12,7 +12,7 @@ import { Task, TeamConfiguration, TeamRoleSetting } from '../../types';
 export interface TaskFormData {
     title: string;
     description: string;
-    status: 'TODO' | 'IN_PROGRESS' | 'DONE';
+    status: 'TODO' | 'IN_PROGRESS' | 'REVIEW' | 'DONE';
     priority: number;
     assigned_role_id: string;
     blocked_by_task_ids: string[];
@@ -198,6 +198,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
                         >
                             <option value="TODO">未着手 (To Do)</option>
                             <option value="IN_PROGRESS">進行中 (In Progress)</option>
+                            <option value="REVIEW">レビュー (Review)</option>
                             <option value="DONE">完了 (Done)</option>
                         </select>
                     </div>
@@ -268,6 +269,7 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
                                     <span className="text-sm text-gray-700 truncate">{t.title}</span>
                                     <span className={`ml-auto text-xs px-1.5 py-0.5 rounded border shrink-0 ${
                                         t.status === 'Done' ? 'bg-green-50 text-green-600 border-green-200' :
+                                        t.status === 'Review' ? 'bg-amber-50 text-amber-700 border-amber-200' :
                                         t.status === 'In Progress' ? 'bg-blue-50 text-blue-600 border-blue-200' :
                                         'bg-slate-50 text-slate-500 border-slate-200'
                                     }`}>{t.status}</span>

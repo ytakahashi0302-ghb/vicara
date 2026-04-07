@@ -26,12 +26,14 @@ export function StatusColumn({ storyId, status, tasks, allStoryTasks = [] }: Sta
     const bgClasses = {
         'To Do': 'bg-slate-50 border-slate-200',
         'In Progress': 'bg-blue-50 border-blue-200',
+        'Review': 'bg-amber-50 border-amber-200',
         'Done': 'bg-emerald-50 border-emerald-200'
     };
 
     const displayStatus = {
         'To Do': '未着手',
         'In Progress': '進行中',
+        'Review': 'レビュー',
         'Done': '完了'
     };
 

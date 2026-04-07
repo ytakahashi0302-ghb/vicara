@@ -15,7 +15,7 @@ interface StorySwimlaneProps {
     tasks: Task[];
 }
 
-const STATUSES: Task['status'][] = ['To Do', 'In Progress', 'Done'];
+const STATUSES: Task['status'][] = ['To Do', 'In Progress', 'Review', 'Done'];
 
 export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: StorySwimlaneProps) {
     const [isAddTaskModalOpen, setIsAddTaskModalOpen] = useState(false);
@@ -26,6 +26,7 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
         const statusMap: Record<TaskFormData['status'], Task['status']> = {
             'TODO': 'To Do',
             'IN_PROGRESS': 'In Progress',
+            'REVIEW': 'Review',
             'DONE': 'Done'
         };
         const newId = uuidv4();
@@ -70,6 +71,7 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
         const groups: Record<string, Task[]> = {
             'To Do': [],
             'In Progress': [],
+            'Review': [],
             'Done': []
         };
         for (const t of tasks) {
@@ -118,7 +120,7 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
 
             {/* Task Columns */}
             <div className="p-4 bg-white">
-                <div className="flex gap-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
                     {STATUSES.map(status => (
                         <StatusColumn
                             key={`${story.id}-${status}`}

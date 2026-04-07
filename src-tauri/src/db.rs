@@ -11,6 +11,33 @@ pub struct QueryResult {
     pub last_insert_id: i64,
 }
 
+const VALID_TASK_STATUSES: &[&str] = &["To Do", "In Progress", "Review", "Done"];
+#[allow(dead_code)]
+const VALID_WORKTREE_STATUSES: &[&str] = &["active", "merging", "merged", "conflict", "removed"];
+
+fn validate_task_status(status: &str) -> Result<(), String> {
+    if VALID_TASK_STATUSES.contains(&status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "status には {} のいずれかを指定してください。",
+            VALID_TASK_STATUSES.join(", ")
+        ))
+    }
+}
+
+#[allow(dead_code)]
+fn validate_worktree_status(status: &str) -> Result<(), String> {
+    if VALID_WORKTREE_STATUSES.contains(&status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "worktree status には {} のいずれかを指定してください。",
+            VALID_WORKTREE_STATUSES.join(", ")
+        ))
+    }
+}
+
 // Model types
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Project {
@@ -57,6 +84,34 @@ pub struct Task {
 pub struct TaskDependency {
     pub task_id: String,
     pub blocked_by_task_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
+pub struct WorktreeRecord {
+    pub id: String,
+    pub task_id: String,
+    pub project_id: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub preview_port: Option<i32>,
+    pub preview_pid: Option<i64>,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct WorktreeUpsertInput {
+    pub id: String,
+    pub task_id: String,
+    pub project_id: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub preview_port: Option<i32>,
+    pub preview_pid: Option<i64>,
+    pub status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -198,6 +253,125 @@ pub async fn get_task_by_id(app: &AppHandle, task_id: &str) -> Result<Option<Tas
     let values = vec![serde_json::to_value(task_id).unwrap()];
     let mut tasks = select_query::<Task>(app, query, values).await?;
     Ok(tasks.pop())
+}
+
+#[allow(dead_code)]
+pub async fn get_worktree_by_task_id(
+    app: &AppHandle,
+    task_id: &str,
+) -> Result<Option<WorktreeRecord>, String> {
+    let query = r#"
+        SELECT *
+        FROM worktrees
+        WHERE task_id = ?
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+    "#;
+    let values = vec![serde_json::to_value(task_id).unwrap()];
+    let mut worktrees = select_query::<WorktreeRecord>(app, query, values).await?;
+    Ok(worktrees.pop())
+}
+
+#[tauri::command]
+pub async fn get_worktree_record(
+    app: AppHandle,
+    task_id: String,
+) -> Result<Option<WorktreeRecord>, String> {
+    get_worktree_by_task_id(&app, &task_id).await
+}
+
+#[allow(dead_code)]
+pub async fn list_worktrees(app: &AppHandle) -> Result<Vec<WorktreeRecord>, String> {
+    let query = "SELECT * FROM worktrees ORDER BY created_at ASC";
+    select_query::<WorktreeRecord>(app, query, vec![]).await
+}
+
+#[allow(dead_code)]
+pub async fn list_worktrees_by_project_id(
+    app: &AppHandle,
+    project_id: &str,
+) -> Result<Vec<WorktreeRecord>, String> {
+    let query = "SELECT * FROM worktrees WHERE project_id = ? ORDER BY created_at ASC";
+    let values = vec![serde_json::to_value(project_id).unwrap()];
+    select_query::<WorktreeRecord>(app, query, values).await
+}
+
+#[allow(dead_code)]
+pub async fn upsert_worktree_record(
+    app: &AppHandle,
+    input: WorktreeUpsertInput,
+) -> Result<QueryResult, String> {
+    validate_worktree_status(&input.status)?;
+
+    let query = r#"
+        INSERT INTO worktrees (
+            id,
+            task_id,
+            project_id,
+            worktree_path,
+            branch_name,
+            preview_port,
+            preview_pid,
+            status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            task_id = excluded.task_id,
+            project_id = excluded.project_id,
+            worktree_path = excluded.worktree_path,
+            branch_name = excluded.branch_name,
+            preview_port = excluded.preview_port,
+            preview_pid = excluded.preview_pid,
+            status = excluded.status,
+            updated_at = CURRENT_TIMESTAMP
+    "#;
+    let values = vec![
+        serde_json::to_value(input.id).unwrap(),
+        serde_json::to_value(input.task_id).unwrap(),
+        serde_json::to_value(input.project_id).unwrap(),
+        serde_json::to_value(input.worktree_path).unwrap(),
+        serde_json::to_value(input.branch_name).unwrap(),
+        serde_json::to_value(input.preview_port).unwrap(),
+        serde_json::to_value(input.preview_pid).unwrap(),
+        serde_json::to_value(input.status).unwrap(),
+    ];
+    execute_query(app, query, values).await
+}
+
+#[allow(dead_code)]
+pub async fn update_worktree_record_state(
+    app: &AppHandle,
+    task_id: &str,
+    preview_port: Option<i32>,
+    preview_pid: Option<i64>,
+    status: &str,
+) -> Result<QueryResult, String> {
+    validate_worktree_status(status)?;
+
+    let query = r#"
+        UPDATE worktrees
+        SET preview_port = ?,
+            preview_pid = ?,
+            status = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE task_id = ?
+    "#;
+    let values = vec![
+        serde_json::to_value(preview_port).unwrap(),
+        serde_json::to_value(preview_pid).unwrap(),
+        serde_json::to_value(status).unwrap(),
+        serde_json::to_value(task_id).unwrap(),
+    ];
+    execute_query(app, query, values).await
+}
+
+#[allow(dead_code)]
+pub async fn delete_worktree_record_by_task_id(
+    app: &AppHandle,
+    task_id: &str,
+) -> Result<QueryResult, String> {
+    let query = "DELETE FROM worktrees WHERE task_id = ?";
+    let values = vec![serde_json::to_value(task_id).unwrap()];
+    execute_query(app, query, values).await
 }
 
 pub async fn get_team_role_by_id(
@@ -438,6 +612,7 @@ pub async fn add_task(
     assigned_role_id: Option<String>,
     priority: Option<i32>,
 ) -> Result<QueryResult, String> {
+    validate_task_status(&status)?;
     let priority_val = priority.unwrap_or(3);
     let query = "INSERT INTO tasks (id, project_id, story_id, title, description, status, assignee_type, assigned_role_id, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
     let values = vec![
@@ -460,6 +635,7 @@ pub async fn update_task_status(
     id: String,
     status: String,
 ) -> Result<QueryResult, String> {
+    validate_task_status(&status)?;
     let query = "UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
     let values = vec![
         serde_json::to_value(status).unwrap(),
@@ -479,6 +655,7 @@ pub async fn update_task(
     assigned_role_id: Option<String>,
     priority: Option<i32>,
 ) -> Result<QueryResult, String> {
+    validate_task_status(&status)?;
     let priority_val = priority.unwrap_or(3);
     let query = "UPDATE tasks SET title = ?, description = ?, status = ?, assignee_type = ?, assigned_role_id = ?, priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
     let values = vec![

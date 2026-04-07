@@ -87,7 +87,7 @@ export function Board() {
                     style: { background: '#fef3c7', color: '#92400e' }
                 });
             }
-            updateTaskStatus(activeTaskId, targetStatus as 'To Do' | 'In Progress' | 'Done');
+            updateTaskStatus(activeTaskId, targetStatus as typeof activeTask.status);
         }
     }, [activeTasks, updateTaskStatus, isTaskBlocked, getTaskBlockers]);
 
