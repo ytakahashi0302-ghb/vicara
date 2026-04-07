@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-scrum-tool"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "env_logger",
  "log",
@@ -36,6 +36,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-sql",
  "tauri-plugin-store",
+ "tempfile",
  "tokio",
  "uuid",
 ]
