@@ -79,6 +79,7 @@ export interface TeamRoleSetting {
     name: string;
     system_prompt: string;
     model: string;
+    avatar_image?: string | null;
     sort_order: number;
 }
 

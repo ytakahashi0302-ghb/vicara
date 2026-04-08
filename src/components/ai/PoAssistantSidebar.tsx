@@ -2,24 +2,31 @@ import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { TeamChatMessage } from '../../types';
 import { useWorkspace } from '../../context/WorkspaceContext';
-import { Send, Bot, User, Loader2, X, Trash2, Sparkles } from 'lucide-react';
+import { Send, User, Loader2, X, Trash2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
+import { Avatar } from './Avatar';
+import { getAvatarDefinition, PO_ASSISTANT_ROLE_NAME, resolveAvatarImageSource } from './avatarRegistry';
+import { usePoAssistantAvatarImage } from '../../hooks/usePoAssistantAvatarImage';
 
-interface TeamLeaderSidebarProps {
+interface PoAssistantSidebarProps {
     isOpen: boolean;
     onClose: () => void;
 }
 
-export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, onClose }) => {
+export const PoAssistantSidebar: React.FC<PoAssistantSidebarProps> = ({ isOpen, onClose }) => {
     const { currentProjectId, projects } = useWorkspace();
+    const poAssistantAvatarImage = usePoAssistantAvatarImage();
     const [messages, setMessages] = useState<TeamChatMessage[]>([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [isFigureHidden, setIsFigureHidden] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const poAssistantFigure = getAvatarDefinition('po-assistant');
+    const poAssistantFigureSrc = resolveAvatarImageSource(poAssistantAvatarImage) ?? poAssistantFigure.src;
 
     // Load chat history when project changes or panel opens
     useEffect(() => {
@@ -43,6 +50,10 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
             setTimeout(() => textareaRef.current?.focus(), 300);
         }
     }, [isOpen]);
+
+    useEffect(() => {
+        setIsFigureHidden(false);
+    }, [isOpen, poAssistantFigureSrc]);
 
     const loadMessages = async () => {
         try {
@@ -90,7 +101,7 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
                 content: userContent,
             });
 
-            // 2. Call AI Team Leader
+            // 2. Call PO assistant
             const messagesForAI = [
                 ...messages.map(m => ({
                     role: m.role,
@@ -125,7 +136,7 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
 
             setMessages(prev => [...prev, aiMsg]);
         } catch (error) {
-            console.error('AI Team Leader chat failed:', error);
+            console.error('PO assistant chat failed:', error);
             toast.error(`推論に失敗しました: ${error}`);
         } finally {
             setIsLoading(false);
@@ -154,7 +165,7 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
 
     return (
         <div
-            className={`flex flex-col h-full w-full bg-white transition-opacity duration-300 ease-in-out overflow-hidden border-none ${
+            className={`relative flex flex-col h-full w-full bg-white transition-opacity duration-300 ease-in-out overflow-hidden border-none ${
                 isOpen ? 'opacity-100' : 'opacity-0 hidden'
             }`}
         >
@@ -163,12 +174,10 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
                     {/* Header */}
                     <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gradient-to-r from-indigo-50 to-blue-50 shrink-0">
                         <div className="flex items-center gap-2.5">
-                            <div className="p-1.5 bg-indigo-100 rounded-lg">
-                                <Sparkles size={18} className="text-indigo-600" />
-                            </div>
+                            <Avatar kind="po-assistant" size="md" imageSrc={poAssistantAvatarImage} />
                             <div>
-                                <h2 className="text-sm font-bold text-gray-800 leading-tight">AI Team Leader</h2>
-                                <p className="text-[10px] text-gray-500 leading-tight">Scrum Master & Lead Engineer</p>
+                                <h2 className="text-sm font-bold text-gray-800 leading-tight">{PO_ASSISTANT_ROLE_NAME}</h2>
+                                <p className="text-[10px] text-gray-500 leading-tight">意思決定サポートとバックログ整理を担当</p>
                             </div>
                         </div>
                         <div className="flex items-center gap-1">
@@ -192,32 +201,31 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
                     </div>
 
                     {/* Chat History */}
-                    <div className="flex-1 overflow-y-auto px-3 py-4 space-y-3 bg-gray-50/50">
+                    <div className="relative flex-1 overflow-y-auto bg-gray-50/50">
+                        <div className="relative z-10 px-3 py-4 pr-6 xl:pr-[7.5rem] space-y-3">
                         {messages.length === 0 && !isLoading && (
                             <div className="flex flex-col items-center justify-center h-full text-center px-6 py-12">
-                                <div className="p-4 bg-indigo-50 rounded-2xl mb-4">
-                                    <Bot size={32} className="text-indigo-400" />
-                                </div>
+                                <Avatar kind="po-assistant" size="lg" imageSrc={poAssistantAvatarImage} className="mb-4 shadow-sm" />
                                 <p className="text-sm font-medium text-gray-600 mb-2">
-                                    AI Team Leader
+                                    {PO_ASSISTANT_ROLE_NAME}
                                 </p>
                                 <p className="text-xs text-gray-400 leading-relaxed">
-                                    プロジェクト全体を俯瞰したアドバイスを提供します。
-                                    バックログの優先順位、スプリントの進捗、技術的な相談など、何でもお気軽にどうぞ。
+                                    プロジェクト全体を俯瞰しながら、優先順位づけや判断整理を支援します。
+                                    バックログの優先順位、スプリントの進め方、要件の切り分けなどを気軽に相談してください。
                                 </p>
                             </div>
                         )}
 
                         {messages.map((msg) => (
                             <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`flex gap-2 max-w-[90%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                                    <div className={`shrink-0 h-7 w-7 rounded-full flex items-center justify-center mt-0.5 ${
-                                        msg.role === 'user'
-                                            ? 'bg-indigo-100 text-indigo-600'
-                                            : 'bg-gradient-to-br from-indigo-100 to-blue-100 text-indigo-600'
-                                    }`}>
-                                        {msg.role === 'user' ? <User size={14} /> : <Bot size={14} />}
-                                    </div>
+                                <div className={`flex gap-3 ${msg.role === 'user' ? 'max-w-[88%] flex-row-reverse' : 'max-w-full flex-row'} `}>
+                                    {msg.role === 'user' ? (
+                                        <div className="shrink-0 h-7 w-7 rounded-full flex items-center justify-center mt-0.5 bg-indigo-100 text-indigo-600">
+                                            <User size={14} />
+                                        </div>
+                                    ) : (
+                                        <Avatar kind="po-assistant" size="md" imageSrc={poAssistantAvatarImage} className="mt-0.5 shadow-sm" />
+                                    )}
                                     <div className={`rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed ${
                                         msg.role === 'user'
                                             ? 'bg-indigo-600 text-white rounded-tr-md'
@@ -239,13 +247,11 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
 
                         {isLoading && (
                             <div className="flex justify-start">
-                                <div className="flex gap-2 max-w-[90%]">
-                                    <div className="shrink-0 h-7 w-7 rounded-full flex items-center justify-center bg-gradient-to-br from-indigo-100 to-blue-100 text-indigo-600 mt-0.5">
-                                        <Bot size={14} />
-                                    </div>
+                                <div className="flex gap-3 max-w-full">
+                                    <Avatar kind="po-assistant" size="md" imageSrc={poAssistantAvatarImage} className="mt-0.5 shadow-sm" />
                                     <div className="rounded-2xl rounded-tl-md px-4 py-3 bg-white border border-gray-200 shadow-sm flex items-center gap-2">
                                         <Loader2 size={14} className="animate-spin text-indigo-500" />
-                                        <span className="text-xs text-gray-400">分析中...</span>
+                                        <span className="text-xs text-gray-400">判断材料を整理しています...</span>
                                     </div>
                                 </div>
                             </div>
@@ -253,9 +259,10 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
 
                         <div ref={messagesEndRef} />
                     </div>
+                    </div>
 
                     {/* Input Area */}
-                    <div className="p-3 bg-white border-t border-gray-200 shrink-0">
+                    <div className="relative z-20 p-3 bg-white border-t border-gray-200 shrink-0">
                         <form onSubmit={handleSend} className="relative">
                             <textarea
                                 ref={textareaRef}
@@ -281,6 +288,18 @@ export const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ isOpen, on
                             </button>
                         </form>
                     </div>
+
+                    {!isFigureHidden && (
+                        <div className="pointer-events-none absolute bottom-[84px] right-[-34px] z-[1] hidden xl:block">
+                            <div className="absolute inset-x-6 bottom-10 top-14 rounded-full bg-emerald-300/14 blur-3xl" />
+                            <img
+                                src={poAssistantFigureSrc}
+                                alt={PO_ASSISTANT_ROLE_NAME}
+                                className="relative h-[365px] w-[210px] origin-bottom-right object-contain opacity-95 drop-shadow-[0_24px_30px_rgba(16,185,129,0.16)]"
+                                onError={() => setIsFigureHidden(true)}
+                            />
+                        </div>
+                    )}
                 </>
             )}
         </div>

@@ -10,6 +10,12 @@ import toast from 'react-hot-toast';
 import { TeamSettingsTab } from './TeamSettingsTab';
 import { TeamConfiguration } from '../../types';
 import { useLlmUsageSummary } from '../../hooks/useLlmUsageSummary';
+import {
+    normalizeStoredStringValue,
+    PO_ASSISTANT_AVATAR_IMAGE_STORE_KEY,
+    VICARA_SETTINGS_UPDATED_EVENT,
+} from '../../hooks/usePoAssistantAvatarImage';
+import { AvatarImageField } from './AvatarImageField';
 
 interface GlobalSettingsModalProps {
     isOpen: boolean;
@@ -60,7 +66,7 @@ function formatSourceLabel(sourceKind: string) {
         idea_refine: 'Idea',
         task_generation: 'Task Gen',
         inception: 'Inception',
-        team_leader: 'Leader',
+        team_leader: 'POアシスタント',
         task_execution: 'Task Exec',
         scaffold_ai: 'Scaffold',
     };
@@ -86,6 +92,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
     const [geminiKey, setGeminiKey] = useState('');
     const [anthropicModel, setAnthropicModel] = useState('');
     const [geminiModel, setGeminiModel] = useState('');
+    const [poAssistantAvatarImage, setPoAssistantAvatarImage] = useState<string | null>(null);
     
     // Custom model toggles
     const [isCustomAnthropic, setIsCustomAnthropic] = useState(false);
@@ -143,6 +150,9 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             else if (typeof gm === 'string') setGeminiModel(gm);
             else setGeminiModel('gemini-2.5-flash'); // default
 
+            const poAssistantImage = await store.get(PO_ASSISTANT_AVATAR_IMAGE_STORE_KEY);
+            setPoAssistantAvatarImage(normalizeStoredStringValue(poAssistantImage));
+
             setTeamConfig(loadedTeamConfig);
             
         } catch (e) {
@@ -194,8 +204,10 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             await store.set('gemini-api-key', { value: geminiKey });
             await store.set('anthropic-model', { value: anthropicModel });
             await store.set('gemini-model', { value: geminiModel });
+            await store.set(PO_ASSISTANT_AVATAR_IMAGE_STORE_KEY, { value: poAssistantAvatarImage ?? '' });
             await store.save();
             await invoke('save_team_configuration', { config: teamConfig });
+            window.dispatchEvent(new Event(VICARA_SETTINGS_UPDATED_EVENT));
             toast.success('設定を保存しました');
             onClose();
         } catch (e) {
@@ -271,7 +283,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                             : 'text-gray-500 hover:text-gray-700'
                     }`}
                 >
-                    AI設定
+                    POアシスタント設定
                 </button>
                 <button
                     onClick={() => setActiveTab('general')}
@@ -298,10 +310,19 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             <div className="min-h-[350px] max-h-[60vh] overflow-y-auto px-1 custom-scrollbar">
                 {activeTab === 'ai' && (
                     <div className="space-y-6">
+                        <AvatarImageField
+                            label="POアシスタント画像"
+                            description="ヘッダー、チャット、サイドバー右下の立ち絵表示に使用する画像です。未設定時は標準の POアシスタント画像を使用します。"
+                            value={poAssistantAvatarImage}
+                            fallbackKind="po-assistant"
+                            previewMode="figure"
+                            onChange={setPoAssistantAvatarImage}
+                        />
+
                         {/* Provider Selection */}
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-2">
-                                デフォルト AI プロバイダー
+                                POアシスタントで使用するデフォルト AI プロバイダー
                             </label>
                             <div className="grid grid-cols-2 gap-3">
                                 <label className={`border rounded-lg p-3 cursor-pointer flex items-center transition-all ${

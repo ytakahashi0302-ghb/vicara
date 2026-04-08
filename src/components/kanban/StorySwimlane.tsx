@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, memo } from 'react';
-import { Story, Task } from '../../types';
+import { Story, Task, TeamRoleSetting } from '../../types';
 import { StatusColumn } from './StatusColumn';
 import { Plus, MoreVertical } from 'lucide-react';
 import { Button } from '../ui/Button';
@@ -13,11 +13,12 @@ import toast from 'react-hot-toast';
 interface StorySwimlaneProps {
     story: Story;
     tasks: Task[];
+    roleLookup: Record<string, TeamRoleSetting>;
 }
 
 const STATUSES: Task['status'][] = ['To Do', 'In Progress', 'Review', 'Done'];
 
-export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: StorySwimlaneProps) {
+export const StorySwimlane = memo(function StorySwimlane({ story, tasks, roleLookup }: StorySwimlaneProps) {
     const [isAddTaskModalOpen, setIsAddTaskModalOpen] = useState(false);
     const [isEditStoryModalOpen, setIsEditStoryModalOpen] = useState(false);
     const { refresh, updateStory, deleteStory, setTaskDependencies } = useScrum();
@@ -128,6 +129,7 @@ export const StorySwimlane = memo(function StorySwimlane({ story, tasks }: Story
                             status={status}
                             tasks={groupedTasks[status]}
                             allStoryTasks={tasks}
+                            roleLookup={roleLookup}
                         />
                     ))}
                 </div>

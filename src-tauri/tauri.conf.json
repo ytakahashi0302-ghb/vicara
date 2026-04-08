@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Vicara",
+  "productName": "vicara",
   "version": "1.1.0",
   "identifier": "com.vicara.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Vicara",
+        "title": "vicara",
         "width": 1920,
         "height": 1080
       }
@@ -40,3 +40,4 @@
     }
   }
 }
+

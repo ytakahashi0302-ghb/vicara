@@ -1,7 +1,7 @@
 import { useState, memo, useCallback, useMemo, useEffect } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Task, WorktreeRecord } from '../../types';
+import { Task, TeamRoleSetting, WorktreeRecord } from '../../types';
 import {
     AlertTriangle,
     ExternalLink,
@@ -26,10 +26,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
+import { Avatar } from '../ai/Avatar';
+import { resolveAvatarForRoleName } from '../ai/avatarRegistry';
 
 interface TaskCardProps {
     task: Task;
     availableTasks?: Task[];
+    roleLookup: Record<string, TeamRoleSetting>;
 }
 
 interface PreviewServerInfo {
@@ -154,7 +157,7 @@ function resolvePreviewPreset(
     return null;
 }
 
-export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: TaskCardProps) {
+export const TaskCard = memo(function TaskCard({ task, availableTasks = [], roleLookup }: TaskCardProps) {
     const {
         updateTaskStatus,
         refresh,
@@ -190,6 +193,10 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: Ta
         () => projects.find((project) => project.id === currentProjectId),
         [projects, currentProjectId],
     );
+    const assignedRole = assignedRoleId ? roleLookup[assignedRoleId] : undefined;
+    const assignedRoleName = assignedRole?.name?.trim() || '';
+    const assignedAvatar = assignedRoleName ? resolveAvatarForRoleName(assignedRoleName) : null;
+    const assignedAvatarImage = assignedRole?.avatar_image ?? null;
     const projectPath = currentProject?.local_path ?? null;
 
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -613,6 +620,14 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [] }: Ta
                     <h4 className="truncate text-sm font-medium text-gray-900" title={task.title}>
                         {task.title}
                     </h4>
+                    {assignedRoleName && assignedAvatar && (
+                        <div className="mt-1.5 flex items-center gap-2">
+                            <Avatar kind={assignedAvatar.kind} size="xs" imageSrc={assignedAvatarImage} />
+                            <span className="truncate text-xs font-medium text-slate-600" title={assignedRoleName}>
+                                {assignedRoleName}
+                            </span>
+                        </div>
+                    )}
                     {task.description && (
                         <div
                             className="relative mt-1 max-h-64 overflow-hidden prose prose-sm max-w-none prose-li:my-0 prose-p:leading-snug prose-slate text-xs text-gray-500"

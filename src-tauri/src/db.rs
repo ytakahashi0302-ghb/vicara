@@ -144,6 +144,7 @@ pub struct TeamRole {
     pub name: String,
     pub system_prompt: String,
     pub model: String,
+    pub avatar_image: Option<String>,
     pub sort_order: i32,
 }
 
@@ -159,6 +160,7 @@ pub struct TeamRoleInput {
     pub name: String,
     pub system_prompt: String,
     pub model: String,
+    pub avatar_image: Option<String>,
     pub sort_order: i32,
 }
 
@@ -379,7 +381,7 @@ pub async fn get_team_role_by_id(
     role_id: &str,
 ) -> Result<Option<TeamRole>, String> {
     let query = r#"
-        SELECT id, name, system_prompt, model, sort_order
+        SELECT id, name, system_prompt, model, avatar_image, sort_order
         FROM team_roles
         WHERE id = ?
         LIMIT 1
@@ -688,7 +690,7 @@ pub async fn delete_task(app: AppHandle, id: String) -> Result<QueryResult, Stri
 }
 
 // ------------------------------------------------------------------------------------------------
-// Team Chat Messages CRUD (AI Team Leader)
+// Team Chat Messages CRUD (POアシスタント)
 // ------------------------------------------------------------------------------------------------
 
 #[tauri::command]
@@ -767,7 +769,7 @@ pub async fn get_team_configuration(app: AppHandle) -> Result<TeamConfiguration,
     let settings = select_query::<TeamSettings>(&app, settings_query, vec![]).await?;
 
     let roles_query = r#"
-        SELECT id, name, system_prompt, model, sort_order
+        SELECT id, name, system_prompt, model, avatar_image, sort_order
         FROM team_roles
         WHERE team_settings_id = 1
         ORDER BY sort_order ASC, created_at ASC
@@ -832,15 +834,17 @@ pub async fn save_team_configuration(
                 name,
                 system_prompt,
                 model,
+                avatar_image,
                 sort_order,
                 updated_at
-            ) VALUES (?, 1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             "#,
         )
         .bind(role.id.trim())
         .bind(role.name.trim())
         .bind(role.system_prompt.trim())
         .bind(role.model.trim())
+        .bind(role.avatar_image.clone())
         .bind(index as i32)
         .execute(&mut *tx)
         .await

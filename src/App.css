@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&display=swap");
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
@@ -8,6 +9,13 @@
 }
 
 @layer components {
+  .app-brand-wordmark {
+    font-family: "Montserrat", ui-sans-serif, system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    text-transform: none;
+  }
+
   .app-splitter {
     @apply relative shrink-0 bg-slate-200/90 transition-colors duration-150;
   }

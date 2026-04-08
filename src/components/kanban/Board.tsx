@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useEffect, useState } from 'react';
 import {
     DndContext,
     closestCorners,
@@ -9,12 +9,16 @@ import {
     DragEndEvent,
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import { invoke } from '@tauri-apps/api/core';
 import { useScrum } from '../../context/ScrumContext';
+import { TeamConfiguration, TeamRoleSetting } from '../../types';
 import { StorySwimlane } from './StorySwimlane';
 import toast from 'react-hot-toast';
+import { VICARA_SETTINGS_UPDATED_EVENT } from '../../hooks/usePoAssistantAvatarImage';
 
 export function Board() {
     const { stories, tasks, sprints, updateTaskStatus, loading, isTaskBlocked, getTaskBlockers } = useScrum();
+    const [teamRoles, setTeamRoles] = useState<TeamRoleSetting[]>([]);
     
     const activeSprint = useMemo(() => {
         return sprints.find(s => s.status === 'Active');
@@ -29,6 +33,40 @@ export function Board() {
         if (!activeSprint) return [];
         return tasks.filter(t => t.sprint_id === activeSprint.id);
     }, [tasks, activeSprint]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadTeamRoles = async () => {
+            try {
+                const config = await invoke<TeamConfiguration>('get_team_configuration');
+                if (!cancelled) {
+                    setTeamRoles(config.roles);
+                }
+            } catch (error) {
+                console.error('Failed to load team roles for avatar resolution', error);
+                if (!cancelled) {
+                    setTeamRoles([]);
+                }
+            }
+        };
+
+        void loadTeamRoles();
+        const handleSettingsUpdated = () => {
+            void loadTeamRoles();
+        };
+        window.addEventListener(VICARA_SETTINGS_UPDATED_EVENT, handleSettingsUpdated);
+
+        return () => {
+            cancelled = true;
+            window.removeEventListener(VICARA_SETTINGS_UPDATED_EVENT, handleSettingsUpdated);
+        };
+    }, []);
+
+    const roleLookup = useMemo<Record<string, TeamRoleSetting>>(
+        () => Object.fromEntries(teamRoles.map((role) => [role.id, role])),
+        [teamRoles],
+    );
 
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -151,6 +189,7 @@ export function Board() {
                             key={story.id}
                             story={story}
                             tasks={groupedTasks[story.id] || []}
+                            roleLookup={roleLookup}
                         />
                     ))}
                 </div>

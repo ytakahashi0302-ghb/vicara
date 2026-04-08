@@ -106,6 +106,12 @@ pub fn run() {
             sql: include_str!("../migrations/15_llm_observability.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 16,
+            description: "avatar_images",
+            sql: include_str!("../migrations/16_avatar_images.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()

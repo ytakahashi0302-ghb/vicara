@@ -466,7 +466,7 @@ pub async fn merge_worktree(
             "merge",
             "--no-ff",
             "-m",
-            &format!("[Vicara] Merge task-{}", task_id),
+            &format!("[vicara] Merge task-{}", task_id),
             &br_name,
         ],
     )?;
@@ -883,7 +883,7 @@ mod tests {
                 "merge",
                 "--no-ff",
                 "-m",
-                &format!("[Vicara] Merge task-{}", task_id),
+                &format!("[vicara] Merge task-{}", task_id),
                 &br_name,
             ],
         )
@@ -1177,3 +1177,4 @@ mod tests {
             .contains("Initial commit"));
     }
 }
+

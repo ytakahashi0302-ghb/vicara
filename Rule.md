@@ -1,4 +1,4 @@
-# Vicara 開発ガイドライン (Rule.md)
+# vicara 開発ガイドライン (Rule.md)
 
 > **【AIへの絶対指示】** 本ファイルは実装ルール（How）を定義する。いかなる提案・実装においても、以下の規約を厳守せよ。
 
@@ -29,3 +29,4 @@
 - **Tauri v2 Permissions**: `capabilities/default.json` に `"sql:default"`, `"sql:allow-execute"`, `"sql:allow-select"` を含めること。
 
 > ※注記: バグや技術的負債（Tech Debt）は本ファイルに追記せず、 `BACKLOG.md` に集約せよ。
+

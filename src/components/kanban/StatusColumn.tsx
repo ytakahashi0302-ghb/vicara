@@ -1,6 +1,6 @@
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { Task } from '../../types';
+import { Task, TeamRoleSetting } from '../../types';
 import { TaskCard } from './TaskCard';
 
 interface StatusColumnProps {
@@ -8,9 +8,10 @@ interface StatusColumnProps {
     status: Task['status'];
     tasks: Task[];
     allStoryTasks?: Task[];
+    roleLookup: Record<string, TeamRoleSetting>;
 }
 
-export function StatusColumn({ storyId, status, tasks, allStoryTasks = [] }: StatusColumnProps) {
+export function StatusColumn({ storyId, status, tasks, allStoryTasks = [], roleLookup }: StatusColumnProps) {
     // 制約案A: ドロップ領域のIDに storyId を含めることで、同一Story内のみの判定に利用する
     const columnId = `${storyId}-${status}`;
 
@@ -53,7 +54,12 @@ export function StatusColumn({ storyId, status, tasks, allStoryTasks = [] }: Sta
             >
                 <div className="min-h-[100px]">
                     {tasks.map(task => (
-                        <TaskCard key={task.id} task={task} availableTasks={allStoryTasks.filter(t => t.id !== task.id)} />
+                        <TaskCard
+                            key={task.id}
+                            task={task}
+                            availableTasks={allStoryTasks.filter(t => t.id !== task.id)}
+                            roleLookup={roleLookup}
+                        />
                     ))}
                 </div>
             </SortableContext>

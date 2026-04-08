@@ -5,6 +5,7 @@ import 'xterm/css/xterm.css';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useScrum } from '../../context/ScrumContext';
+import { TeamConfiguration, TeamRoleSetting } from '../../types';
 import {
     AlertTriangle,
     ChevronDown,
@@ -16,6 +17,9 @@ import {
     X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { Avatar } from '../ai/Avatar';
+import { resolveAvatarForRoleName } from '../ai/avatarRegistry';
+import { VICARA_SETTINGS_UPDATED_EVENT } from '../../hooks/usePoAssistantAvatarImage';
 
 type TerminalSessionStatus = 'Starting' | 'Running' | 'Completed' | 'Failed' | 'Killed';
 
@@ -51,7 +55,7 @@ interface ClaudeExitPayload {
     new_status?: string;
 }
 
-const WELCOME_MESSAGE = '\x1b[38;5;12m[Vicara]\x1b[0m Dev Agent Terminal Ready.\r\n';
+const WELCOME_MESSAGE = '\x1b[38;5;12m[vicara]\x1b[0m Dev Agent Terminal Ready.\r\n';
 
 function buildSessionHeader(session: Pick<TerminalTabSession, 'roleName' | 'taskTitle' | 'model'>): string {
     return `\x1b[38;5;12m[${session.roleName}]\x1b[0m ${session.taskTitle}\r\n\x1b[38;5;8mModel: ${session.model || 'unknown'}\x1b[0m\r\n\r\n`;
@@ -147,6 +151,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
     const { updateTaskStatus } = useScrum();
     const [sessions, setSessions] = useState<Record<string, TerminalTabSession>>({});
     const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+    const [teamRoles, setTeamRoles] = useState<TeamRoleSetting[]>([]);
 
     const sortedSessions = useMemo(
         () => Object.values(sessions).sort((a, b) => a.startedAt - b.startedAt),
@@ -154,7 +159,22 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
     );
 
     const activeSession = activeTaskId ? sessions[activeTaskId] ?? null : null;
+    const roleLookupByName = useMemo(
+        () =>
+            new Map(
+                teamRoles
+                    .map((role) => [role.name.trim(), role] as const)
+                    .filter(([roleName]) => roleName.length > 0),
+            ),
+        [teamRoles],
+    );
+    const activeSessionRole = activeSession
+        ? roleLookupByName.get(activeSession.roleName.trim()) ?? null
+        : null;
     const canKillActiveSession = activeSession ? isSessionRunning(activeSession.status) : false;
+    const activeSessionAvatar = activeSession
+        ? resolveAvatarForRoleName(activeSession.roleName)
+        : null;
     const completedSessionCount = useMemo(
         () => sortedSessions.filter((session) => !isSessionRunning(session.status)).length,
         [sortedSessions],
@@ -167,6 +187,36 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
     useEffect(() => {
         sessionsRef.current = sessions;
     }, [sessions]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadTeamRoles = async () => {
+            try {
+                const config = await invoke<TeamConfiguration>('get_team_configuration');
+                if (!cancelled) {
+                    setTeamRoles(config.roles);
+                }
+            } catch (error) {
+                console.error('Failed to load team roles for terminal avatars', error);
+                if (!cancelled) {
+                    setTeamRoles([]);
+                }
+            }
+        };
+
+        const handleSettingsUpdated = () => {
+            void loadTeamRoles();
+        };
+
+        void loadTeamRoles();
+        window.addEventListener(VICARA_SETTINGS_UPDATED_EVENT, handleSettingsUpdated);
+
+        return () => {
+            cancelled = true;
+            window.removeEventListener(VICARA_SETTINGS_UPDATED_EVENT, handleSettingsUpdated);
+        };
+    }, []);
 
     useEffect(() => {
         if (!terminalRef.current) return;
@@ -299,7 +349,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                                 ...createSessionFromActiveSession(restored),
                                 logs:
                                     createSessionFromActiveSession(restored).logs +
-                                    '\x1b[38;5;12m[Vicara]\x1b[0m 進行中セッションを復元しました。\r\n',
+                                    '\x1b[38;5;12m[vicara]\x1b[0m 進行中セッションを復元しました。\r\n',
                             };
                     }
                     return next;
@@ -588,9 +638,32 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                 </button>
             </div>
 
-            <div className={`relative min-h-0 flex-1 bg-[#1e1e1e] ${isMinimized ? 'hidden' : 'block'}`}>
+            <div className={`relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e] ${isMinimized ? 'hidden' : 'block'}`}>
                 <div ref={terminalRef} className="h-full w-full overflow-hidden" />
+                {activeSession && activeSessionAvatar && (
+                    <div className="pointer-events-none absolute bottom-3 right-3 flex items-end gap-3">
+                        <div className="rounded-2xl border border-sky-400/20 bg-zinc-950/74 px-4 py-2.5 text-right shadow-[0_18px_45px_-25px_rgba(56,189,248,0.45)] backdrop-blur-sm">
+                            <div className="text-sm font-semibold leading-none text-sky-100">
+                                {activeSession.roleName}
+                            </div>
+                            <div className="mt-1 max-w-[300px] truncate text-xs text-zinc-400">
+                                {activeSession.taskTitle}
+                            </div>
+                        </div>
+                        <div className="relative">
+                            <div className="absolute inset-0 rounded-full bg-sky-400/20 blur-2xl" />
+                            <Avatar
+                                kind={activeSessionAvatar.kind}
+                                size="xl"
+                                alt={activeSession.roleName}
+                                imageSrc={activeSessionRole?.avatar_image ?? null}
+                                className="relative h-28 w-28 shadow-[0_18px_42px_-20px_rgba(56,189,248,0.75)]"
+                            />
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
 };
+

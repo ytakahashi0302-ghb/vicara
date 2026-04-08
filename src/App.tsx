@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { Toaster } from "react-hot-toast";
 import {
     AlertTriangle,
-    Bot,
     Coins,
     History,
     RefreshCcw,
@@ -14,11 +13,13 @@ import { ScrumProvider } from "./context/ScrumContext";
 import { WorkspaceProvider, useWorkspace } from "./context/WorkspaceContext";
 import { SprintTimerProvider } from "./context/SprintTimerContext";
 import { useLlmUsageSummary } from "./hooks/useLlmUsageSummary";
+import { usePoAssistantAvatarImage } from "./hooks/usePoAssistantAvatarImage";
 import { ProjectSelector } from "./components/ui/ProjectSelector";
 import { ProjectSettings } from "./components/ui/ProjectSettings";
 import { InceptionDeck } from "./components/project/InceptionDeck";
 import { ScrumDashboard } from "./components/kanban/ScrumDashboard";
-import { TeamLeaderSidebar } from "./components/ai/TeamLeaderSidebar";
+import { Avatar } from "./components/ai/Avatar";
+import { PoAssistantSidebar } from "./components/ai/PoAssistantSidebar";
 import { HistoryModal } from "./components/HistoryModal";
 import { SprintTimer } from "./components/SprintTimer";
 import { TerminalDock } from "./components/terminal/TerminalDock";
@@ -45,6 +46,7 @@ interface AppHeaderProps {
     onOpenSettings: () => void;
     onSetView: (view: AppView) => void;
     onToggleSidebar: () => void;
+    poAssistantAvatarImage: string | null;
 }
 
 function formatTokenCount(value: number) {
@@ -130,6 +132,7 @@ function AppHeader({
     onOpenSettings,
     onSetView,
     onToggleSidebar,
+    poAssistantAvatarImage,
 }: AppHeaderProps) {
     return (
         <header className="sticky top-0 z-30 shrink-0 border-b border-slate-200 bg-white/90 backdrop-blur-md shadow-[0_1px_0_rgba(15,23,42,0.04)]">
@@ -148,8 +151,8 @@ function AppHeader({
                                 </svg>
                             </div>
                             <div className="min-w-0">
-                                <div className="text-lg font-bold tracking-tight text-slate-900">
-                                    Vicara
+                                <div className="app-brand-wordmark text-lg text-slate-900">
+                                    vicara
                                 </div>
                                 <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
                                     人間中心のAIチーム開発
@@ -212,10 +215,10 @@ function AppHeader({
                                             ? "border-indigo-300 bg-indigo-100 text-indigo-800"
                                             : "border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
                                     }`}
-                                    title={isSidebarOpen ? "AI Team Leaderを閉じる" : "AI Team Leaderを開く"}
+                                    title={isSidebarOpen ? "POアシスタントを閉じる" : "POアシスタントを開く"}
                                 >
-                                    <Bot size={16} />
-                                    <span className="hidden sm:inline">AI Leader</span>
+                                    <Avatar kind="po-assistant" size="xs" imageSrc={poAssistantAvatarImage} />
+                                    <span className="hidden sm:inline">POアシスタント</span>
                                 </button>
                             )}
 
@@ -239,6 +242,7 @@ function AppHeader({
 
 function AppContent() {
     const { currentProjectId, gitStatus, refreshGitStatus } = useWorkspace();
+    const poAssistantAvatarImage = usePoAssistantAvatarImage();
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
     const [currentView, setCurrentView] = useState<AppView>("kanban");
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -367,10 +371,10 @@ function AppContent() {
                         <AlertTriangle size={28} />
                     </div>
                     <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-                        Vicara の利用には Git のインストールが必要です
+                        vicara の利用には Git のインストールが必要です
                     </h1>
                     <p className="mt-3 text-sm leading-6 text-slate-600">
-                        Vicara は Git Worktree を前提として AI 開発環境を隔離します。
+                        vicara は Git Worktree を前提として AI 開発環境を隔離します。
                         この PC に Git が見つからないため、安全のため処理を中断しています。
                     </p>
                     {gitStatus.message && (
@@ -413,6 +417,7 @@ function AppContent() {
                 onOpenSettings={() => setIsSettingsOpen(true)}
                 onSetView={setCurrentView}
                 onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
+                poAssistantAvatarImage={poAssistantAvatarImage}
             />
 
             {currentView === "inception" ? (
@@ -495,7 +500,7 @@ function AppContent() {
                             isSidebarOpen ? "min-w-[320px]" : "min-w-0"
                         }`}
                     >
-                        <TeamLeaderSidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
+                        <PoAssistantSidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
                     </div>
                 </div>
             )}
@@ -520,3 +525,4 @@ function App() {
 }
 
 export default App;
+

@@ -1,5 +1,6 @@
 import { Cpu, Plus, RefreshCw, TerminalSquare, Trash2, Users } from 'lucide-react';
 import { Button } from './Button';
+import { AvatarImageField } from './AvatarImageField';
 import { TeamConfiguration, TeamRoleSetting } from '../../types';
 
 interface TeamSettingsTabProps {
@@ -19,6 +20,7 @@ function createEmptyRole(): TeamRoleSetting {
         name: '',
         system_prompt: '',
         model: 'claude-3-5-sonnet-20241022',
+        avatar_image: null,
         sort_order: 0,
     };
 }
@@ -328,6 +330,17 @@ export function TeamSettingsTab({
                                         />
                                     )}
                                 </div>
+                            </div>
+
+                            <div className="mt-4">
+                                <AvatarImageField
+                                    label="Dev-agent アバター画像"
+                                    description="このテンプレートから起動される Dev-agent の表示画像です。未設定時は標準の Dev-agent 画像を使用します。"
+                                    value={role.avatar_image ?? null}
+                                    fallbackKind="dev-agent"
+                                    previewMode="avatar"
+                                    onChange={(value) => updateRole(role.id, { avatar_image: value })}
+                                />
                             </div>
 
                             <div className="mt-4">
