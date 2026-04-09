@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 pub mod claude;
+pub mod codex;
+pub mod gemini;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -41,11 +43,25 @@ pub trait CliRunner: Send + Sync {
 
     fn command_name(&self) -> &str;
 
+    fn default_model(&self) -> &str;
+
+    fn install_hint(&self) -> &str;
+
     fn display_name(&self) -> &str {
         self.cli_type().display_name()
     }
 
     fn build_args(&self, prompt: &str, model: &str, cwd: &str) -> Vec<String>;
+
+    fn resolve_model(&self, configured_model: &str) -> String {
+        let trimmed = configured_model.trim();
+
+        if trimmed.is_empty() {
+            self.default_model().to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
 
     fn env_vars(&self) -> Vec<(String, String)> {
         vec![]
@@ -68,12 +84,8 @@ pub trait CliRunner: Send + Sync {
 pub fn create_runner(cli_type: &CliType) -> Result<Box<dyn CliRunner>, String> {
     match cli_type {
         CliType::Claude => Ok(Box::new(claude::ClaudeRunner)),
-        CliType::Gemini => {
-            Err("Gemini CLI runner は未実装です。Epic 38 で対応予定です。".to_string())
-        }
-        CliType::Codex => {
-            Err("Codex CLI runner は未実装です。Epic 38 で対応予定です。".to_string())
-        }
+        CliType::Gemini => Ok(Box::new(gemini::GeminiRunner)),
+        CliType::Codex => Ok(Box::new(codex::CodexRunner)),
     }
 }
 
@@ -96,8 +108,27 @@ mod tests {
     }
 
     #[test]
-    fn create_runner_rejects_unimplemented_runners() {
-        assert!(create_runner(&CliType::Gemini).is_err());
-        assert!(create_runner(&CliType::Codex).is_err());
+    fn create_runner_returns_all_supported_runners() {
+        let cases = [
+            (CliType::Claude, "claude", "claude-sonnet-4-20250514"),
+            (CliType::Gemini, "gemini", "gemini-2.5-pro"),
+            (CliType::Codex, "codex", "o3"),
+        ];
+
+        for (cli_type, expected_command, expected_model) in cases {
+            let runner = create_runner(&cli_type).expect("Runner should exist");
+
+            assert_eq!(runner.cli_type(), cli_type);
+            assert_eq!(runner.command_name(), expected_command);
+            assert_eq!(runner.default_model(), expected_model);
+        }
+    }
+
+    #[test]
+    fn resolve_model_falls_back_to_runner_default() {
+        let runner = create_runner(&CliType::Gemini).expect("Gemini runner should exist");
+
+        assert_eq!(runner.resolve_model(""), "gemini-2.5-pro");
+        assert_eq!(runner.resolve_model("  custom-model  "), "custom-model");
     }
 }

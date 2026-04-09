@@ -1,4 +1,5 @@
 use crate::{
+    cli_detection,
     cli_runner::{self, CliRunner, CliType},
     db, llm_observability, worktree,
 };
@@ -94,8 +95,6 @@ impl AgentState {
         }
     }
 }
-
-const DEFAULT_CLAUDE_MODEL: &str = "claude-3-5-sonnet-20241022";
 
 // ---------------------------------------------------------------------------
 // イベントペイロード
@@ -264,12 +263,15 @@ fn reserve_session_slot(
     Ok(state.sessions.clone())
 }
 
-fn build_generic_session_info(task_id: &str, model: &str) -> Result<ActiveAgentSession, String> {
+fn build_generic_session_info(
+    task_id: &str,
+    runner: &dyn CliRunner,
+) -> Result<ActiveAgentSession, String> {
     Ok(ActiveAgentSession {
         task_id: task_id.to_string(),
         task_title: task_id.to_string(),
         role_name: "Scaffold AI".to_string(),
-        model: model.to_string(),
+        model: runner.default_model().to_string(),
         started_at: current_timestamp_millis()?,
         status: "Starting".to_string(),
     })
@@ -278,15 +280,40 @@ fn build_generic_session_info(task_id: &str, model: &str) -> Result<ActiveAgentS
 fn build_task_session_info(
     task: &db::Task,
     role: &db::TeamRole,
+    runner: &dyn CliRunner,
 ) -> Result<ActiveAgentSession, String> {
     Ok(ActiveAgentSession {
         task_id: task.id.clone(),
         task_title: task.title.clone(),
         role_name: role.name.clone(),
-        model: role.model.clone(),
+        model: runner.resolve_model(&role.model),
         started_at: current_timestamp_millis()?,
         status: "Starting".to_string(),
     })
+}
+
+fn build_cli_not_found_message(runner: &dyn CliRunner) -> String {
+    format!(
+        "{} ({}) が見つかりません。`{}` でインストールし、PATH に追加してください。",
+        runner.display_name(),
+        runner.command_name(),
+        runner.install_hint()
+    )
+}
+
+async fn ensure_cli_is_available(runner: &dyn CliRunner) -> Result<(), String> {
+    let installed_clis = cli_detection::detect_installed_clis().await?;
+    let is_installed = installed_clis
+        .into_iter()
+        .find(|cli| cli.name == runner.command_name())
+        .map(|cli| cli.installed)
+        .unwrap_or(false);
+
+    if is_installed {
+        Ok(())
+    } else {
+        Err(build_cli_not_found_message(runner))
+    }
 }
 
 fn promote_session_to_running(
@@ -511,8 +538,6 @@ pub async fn execute_claude_prompt_task(
     project_id: Option<String>,
 ) -> Result<(), String> {
     let max_concurrent_agents = db::get_max_concurrent_agents_value(&app_handle).await?;
-    let session_info = build_generic_session_info(&task_id, DEFAULT_CLAUDE_MODEL)?;
-    let sessions_arc = reserve_session_slot(&state, session_info.clone(), max_concurrent_agents)?;
     let usage_context = AgentUsageContext {
         source_kind: "scaffold_ai".to_string(),
         project_id,
@@ -520,6 +545,9 @@ pub async fn execute_claude_prompt_task(
         db_task_id: None,
     };
     let runner = cli_runner::create_runner(&CliType::Claude)?;
+    ensure_cli_is_available(runner.as_ref()).await?;
+    let session_info = build_generic_session_info(&task_id, runner.as_ref())?;
+    let sessions_arc = reserve_session_slot(&state, session_info.clone(), max_concurrent_agents)?;
 
     execute_prompt_request(
         app_handle,
@@ -567,12 +595,7 @@ fn spawn_agent_process(
     }
     let mut child = command.spawn().map_err(|e| {
         let msg = if e.kind() == std::io::ErrorKind::NotFound {
-            format!(
-                "{} が見つかりません。{} がインストール済みで PATH に通っていることを確認してください。({})",
-                runner.command_name(),
-                runner.display_name(),
-                e
-            )
+            format!("{} ({})", build_cli_not_found_message(runner), e)
         } else {
             format!("プロセス起動失敗 ({}): {}", runner.display_name(), e)
         };
@@ -844,19 +867,14 @@ pub async fn execute_claude_task(
         .ok_or_else(|| format!("担当ロールが見つかりません: {}", role_id))?;
     let cli_type = CliType::from_str(&role.cli_type);
     let runner = cli_runner::create_runner(&cli_type)?;
+    ensure_cli_is_available(runner.as_ref()).await?;
 
-    if role.model.trim().is_empty() {
-        return Err(format!(
-            "担当ロールの {} モデルが未設定です。",
-            runner.display_name()
-        ));
-    }
     if role.system_prompt.trim().is_empty() {
         return Err("担当ロールのシステムプロンプトが未設定です。".to_string());
     }
 
     let max_concurrent_agents = db::get_max_concurrent_agents_value(&app_handle).await?;
-    let session_info = build_task_session_info(&task, &role)?;
+    let session_info = build_task_session_info(&task, &role, runner.as_ref())?;
     let sessions_arc = reserve_session_slot(&state, session_info.clone(), max_concurrent_agents)?;
 
     log::info!(
@@ -864,7 +882,7 @@ pub async fn execute_claude_task(
         task.id,
         role.name,
         cli_type.as_str(),
-        role.model,
+        session_info.model,
         max_concurrent_agents
     );
 

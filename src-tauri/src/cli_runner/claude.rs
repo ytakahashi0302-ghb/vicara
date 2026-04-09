@@ -1,5 +1,8 @@
 use super::{CliRunner, CliType};
 
+pub const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
+pub const INSTALL_HINT: &str = "npm install -g @anthropic-ai/claude-code";
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClaudeRunner;
 
@@ -10,6 +13,14 @@ impl CliRunner for ClaudeRunner {
 
     fn command_name(&self) -> &str {
         "claude"
+    }
+
+    fn default_model(&self) -> &str {
+        DEFAULT_MODEL
+    }
+
+    fn install_hint(&self) -> &str {
+        INSTALL_HINT
     }
 
     fn build_args(&self, prompt: &str, model: &str, cwd: &str) -> Vec<String> {
@@ -29,7 +40,7 @@ impl CliRunner for ClaudeRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::ClaudeRunner;
+    use super::{ClaudeRunner, DEFAULT_MODEL, INSTALL_HINT};
     use crate::cli_runner::{CliRunner, CliType};
 
     #[test]
@@ -55,5 +66,7 @@ mod tests {
             .map(str::to_string)
             .collect::<Vec<_>>()
         );
+        assert_eq!(runner.default_model(), DEFAULT_MODEL);
+        assert_eq!(runner.install_hint(), INSTALL_HINT);
     }
 }

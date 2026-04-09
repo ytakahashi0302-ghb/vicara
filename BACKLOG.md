@@ -11,6 +11,7 @@
 
 ## AI連携 & LLM挙動の差異
 - [ ] **Claude CLI 実行分の厳密 usage 計測**: Epic 32 では CLI 実行分について `measurement_status='unavailable'` を許容する。将来的には Claude CLI から機械可読な usage を安全に取得し、文字列パースに依存しない正確な token/cost 計測へ移行する。
+- [ ] **Gemini/Codex CLIの最新引数仕様への追従**: Epic 38で実装したCLI引数（`--sandbox permissive`, `--full-auto`）が最新の公式仕様（`--yolo`, `codex exec` 等）と乖離している可能性があるため、UI実装後の結合テスト時に実機検証し、正しいコマンドへ修正する。
 
 ## Inception Deck (スプリント0) 関連
 - [ ] **Inception Deckフェーズ完了後の自動タブ切り替え**: ドキュメント（差分）生成時に、対応するプレビュータブ（CONTEXT / ARCHITECTURE / RULE）を自動でアクティブにするUX改善。
