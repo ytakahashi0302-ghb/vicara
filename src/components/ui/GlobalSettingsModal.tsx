@@ -26,10 +26,16 @@ interface GlobalSettingsModalProps {
 
 type SettingsTab = 'setup' | 'general' | 'analytics' | 'ai' | 'team';
 type AiProvider = 'anthropic' | 'gemini' | 'openai' | 'ollama';
+type PoAssistantTransport = 'api' | 'cli';
 type SupportedCliType = 'claude' | 'gemini' | 'codex';
 type InstalledCliMap = Record<SupportedCliType, boolean>;
 
 const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
+const DEFAULT_PO_ASSISTANT_CLI_MODELS: Record<SupportedCliType, string> = {
+    claude: 'claude-sonnet-4-20250514',
+    gemini: 'gemini-2.5-pro',
+    codex: 'o3',
+};
 
 const DEFAULT_TEAM_CONFIGURATION: TeamConfiguration = {
     max_concurrent_agents: 1,
@@ -139,6 +145,21 @@ function getAiProviderLabel(provider: AiProvider) {
     }
 }
 
+function getCliTypeLabel(cliType: SupportedCliType) {
+    switch (cliType) {
+        case 'claude':
+            return 'Claude Code CLI';
+        case 'gemini':
+            return 'Gemini CLI';
+        case 'codex':
+            return 'Codex CLI';
+    }
+}
+
+function getDefaultPoAssistantCliModel(cliType: SupportedCliType) {
+    return DEFAULT_PO_ASSISTANT_CLI_MODELS[cliType];
+}
+
 function ConfigurationBadge({
     configured,
     configuredLabel = '設定済み',
@@ -178,6 +199,9 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
     
     // AI Settings State
     const [provider, setProvider] = useState<AiProvider>('anthropic');
+    const [poAssistantTransport, setPoAssistantTransport] = useState<PoAssistantTransport>('api');
+    const [poAssistantCliType, setPoAssistantCliType] = useState<SupportedCliType>('claude');
+    const [poAssistantCliModel, setPoAssistantCliModel] = useState(DEFAULT_PO_ASSISTANT_CLI_MODELS.claude);
     const [anthropicKey, setAnthropicKey] = useState('');
     const [geminiKey, setGeminiKey] = useState('');
     const [openaiKey, setOpenaiKey] = useState('');
@@ -350,6 +374,20 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                 setProvider('anthropic');
             }
 
+            const storedPoAssistantTransport = normalizeStoredStringValue(await store.get('po-assistant-transport'));
+            setPoAssistantTransport(storedPoAssistantTransport === 'cli' ? 'cli' : 'api');
+
+            const storedPoAssistantCliType = normalizeStoredStringValue(await store.get('po-assistant-cli-type'));
+            const nextPoAssistantCliType: SupportedCliType =
+                storedPoAssistantCliType === 'gemini' || storedPoAssistantCliType === 'codex'
+                    ? storedPoAssistantCliType
+                    : 'claude';
+            setPoAssistantCliType(nextPoAssistantCliType);
+            setPoAssistantCliModel(
+                normalizeStoredStringValue(await store.get('po-assistant-cli-model'))
+                    ?? getDefaultPoAssistantCliModel(nextPoAssistantCliType),
+            );
+
             setAnthropicKey(normalizeStoredStringValue(await store.get('anthropic-api-key')) ?? '');
             setGeminiKey(normalizeStoredStringValue(await store.get('gemini-api-key')) ?? '');
             setOpenaiKey(normalizeStoredStringValue(await store.get('openai-api-key')) ?? '');
@@ -448,6 +486,13 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
         Number(openaiConfigured) +
         Number(ollamaConfigured);
     const defaultAiProviderLabel = getAiProviderLabel(provider);
+    const poAssistantCliInstalled = installedCliMap[poAssistantCliType];
+    const poAssistantExecutionLabel =
+        poAssistantTransport === 'api'
+            ? defaultAiProviderLabel
+            : getCliTypeLabel(poAssistantCliType);
+    const poAssistantExecutionCaption =
+        poAssistantTransport === 'api' ? 'API モード' : 'CLI モード';
 
     const handleSave = async () => {
         if (teamValidationMessages.length > 0) {
@@ -459,6 +504,11 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
         try {
             const store = await load('settings.json');
             await store.set('default-ai-provider', { value: provider });
+            await store.set('po-assistant-transport', { value: poAssistantTransport });
+            await store.set('po-assistant-cli-type', { value: poAssistantCliType });
+            await store.set('po-assistant-cli-model', {
+                value: poAssistantCliModel.trim() || getDefaultPoAssistantCliModel(poAssistantCliType),
+            });
             await store.set('anthropic-api-key', { value: anthropicKey });
             await store.set('gemini-api-key', { value: geminiKey });
             await store.set('openai-api-key', { value: openaiKey });
@@ -655,7 +705,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                                 POアシスタントの既定動作を整える
                                             </h3>
                                             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-                                                画像、既定プロバイダー、APIキー、モデルをまとめて管理します。ここで保存した内容は、
+                                                実行方式、既定プロバイダー、CLI、APIキー、モデル、画像をまとめて管理します。ここで保存した内容は、
                                                 POアシスタントのチャット体験とサイドバー表示に反映されます。
                                             </p>
                                         </div>
@@ -666,7 +716,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                             Conversational Control
                                         </span>
                                         <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
-                                            Provider Switching
+                                            Transport Switching
                                         </span>
                                         <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
                                             Avatar Customization
@@ -679,8 +729,8 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                                             Default
                                         </div>
-                                        <div className="mt-2 text-lg font-semibold text-slate-900">{defaultAiProviderLabel}</div>
-                                        <div className="mt-1 text-sm text-slate-500">既定プロバイダー</div>
+                                        <div className="mt-2 text-lg font-semibold text-slate-900">{poAssistantExecutionLabel}</div>
+                                        <div className="mt-1 text-sm text-slate-500">{poAssistantExecutionCaption}</div>
                                     </div>
                                     <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm">
                                         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -721,7 +771,123 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                             <div className="max-w-3xl">
                                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-600">
-                                    02 Default Provider
+                                    02 Execution Mode
+                                </div>
+                                <h3 className="mt-2 text-sm font-semibold text-slate-900">実行方式</h3>
+                                <p className="mt-1 text-sm leading-6 text-slate-600">
+                                    POアシスタントを API で動かすか、CLI サブスクリプション / ローカル実行で動かすかを選択します。
+                                </p>
+                            </div>
+
+                            <div className="mt-5 grid gap-3 md:grid-cols-2">
+                                <label
+                                    className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${
+                                        poAssistantTransport === 'api'
+                                            ? 'border-sky-300 bg-sky-50/80 ring-1 ring-sky-200'
+                                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                                    }`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="po-assistant-transport"
+                                        value="api"
+                                        checked={poAssistantTransport === 'api'}
+                                        onChange={() => setPoAssistantTransport('api')}
+                                        className="hidden"
+                                    />
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-semibold text-slate-900">API</div>
+                                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                                                Anthropic / Gemini / OpenAI / Ollama の既存プロバイダー設定を使って POアシスタントを実行します。
+                                            </p>
+                                        </div>
+                                        <ConfigurationBadge configured={configuredAiProviderCount > 0} />
+                                    </div>
+                                </label>
+
+                                <label
+                                    className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${
+                                        poAssistantTransport === 'cli'
+                                            ? 'border-cyan-300 bg-cyan-50/80 ring-1 ring-cyan-200'
+                                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                                    }`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="po-assistant-transport"
+                                        value="cli"
+                                        checked={poAssistantTransport === 'cli'}
+                                        onChange={() => setPoAssistantTransport('cli')}
+                                        className="hidden"
+                                    />
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-semibold text-slate-900">CLI</div>
+                                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                                                Claude Code / Gemini CLI / Codex CLI などのサブスク・ローカル環境を使って追加 API コストを抑えます。
+                                            </p>
+                                        </div>
+                                        <ConfigurationBadge
+                                            configured={poAssistantCliInstalled}
+                                            configuredLabel="検出済み"
+                                            unconfiguredLabel="未検出"
+                                        />
+                                    </div>
+                                </label>
+                            </div>
+
+                            {poAssistantTransport === 'cli' && (
+                                <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,260px)_1fr]">
+                                    <div>
+                                        <label className="mb-1 block text-sm font-medium text-slate-700">CLI種別</label>
+                                        <select
+                                            value={poAssistantCliType}
+                                            onChange={(e) => {
+                                                const nextCliType = e.target.value as SupportedCliType;
+                                                setPoAssistantCliType(nextCliType);
+                                                setPoAssistantCliModel(getDefaultPoAssistantCliModel(nextCliType));
+                                            }}
+                                            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                        >
+                                            <option value="claude">Claude Code CLI</option>
+                                            <option value="gemini">Gemini CLI</option>
+                                            <option value="codex">Codex CLI</option>
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <div className="mb-1 flex items-center justify-between gap-3">
+                                            <label className="block text-sm font-medium text-slate-700">モデル</label>
+                                            <ConfigurationBadge
+                                                configured={poAssistantCliInstalled}
+                                                configuredLabel="CLI 検出済み"
+                                                unconfiguredLabel="CLI 未検出"
+                                            />
+                                        </div>
+                                        <input
+                                            type="text"
+                                            value={poAssistantCliModel}
+                                            onChange={(e) => setPoAssistantCliModel(e.target.value)}
+                                            placeholder={getDefaultPoAssistantCliModel(poAssistantCliType)}
+                                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                        />
+                                        <p className="mt-2 text-xs leading-5 text-slate-500">
+                                            {poAssistantCliInstalled
+                                                ? `${getCliTypeLabel(poAssistantCliType)} を検出済みです。必要に応じてモデル名だけを上書きできます。`
+                                                : `${getCliTypeLabel(poAssistantCliType)} はまだ検出されていません。保存は可能ですが、実行前にセットアップタブで導入を確認してください。`}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {poAssistantTransport === 'api' && (
+                            <>
+                        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                            <div className="max-w-3xl">
+                                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-600">
+                                    03 Default Provider
                                 </div>
                                 <h3 className="mt-2 text-sm font-semibold text-slate-900">既定AIプロバイダー</h3>
                                 <p className="mt-1 text-sm leading-6 text-slate-600">
@@ -855,7 +1021,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                             <div className="max-w-3xl">
                                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-600">
-                                    03 Provider Settings
+                                    04 Provider Settings
                                 </div>
                                 <h3 className="mt-2 text-sm font-semibold text-slate-900">プロバイダー設定</h3>
                                 <p className="mt-1 text-sm leading-6 text-slate-600">
@@ -1254,6 +1420,8 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                 </div>
                             </div>
                         </div>
+                            </>
+                        )}
                     </div>
                 )}
 

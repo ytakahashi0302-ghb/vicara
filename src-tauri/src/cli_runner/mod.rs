@@ -53,6 +53,14 @@ pub trait CliRunner: Send + Sync {
 
     fn build_args(&self, prompt: &str, model: &str, cwd: &str) -> Vec<String>;
 
+    fn stdin_payload(&self, _prompt: &str) -> Option<String> {
+        None
+    }
+
+    fn timeout_secs(&self) -> u64 {
+        60
+    }
+
     fn resolve_model(&self, configured_model: &str) -> String {
         let trimmed = configured_model.trim();
 

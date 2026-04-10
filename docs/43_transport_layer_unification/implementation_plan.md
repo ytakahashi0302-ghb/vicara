@@ -1,160 +1,141 @@
-# Epic 43: トランスポート層統一 実装計画
+# Epic 43: PO アシスタント Provider / Transport 信頼性改善 実装計画
 
 ## ステータス
 
 - 状態: `Ready`
 - 実装開始条件: Epic 42 完了
-- 作成日: 2026-04-09
+- 更新日: 2026-04-10
 
 ## Epic の目的
 
-Phase 1〜3-A で段階的に追加してきた各種 AI ツール対応を、一貫性のある統一アーキテクチャとして完成させる。設定の分散を解消し、ユーザーが直感的に「PO は Ollama、Lead Dev は Claude Code、Frontend Dev は Gemini CLI」といったチーム編成を行える最終形を実現する。
+Epic 42 で PO アシスタントは CLI / API の選択に対応したが、実運用の観点では provider / transport ごとの安定性に差が残っている。Epic 43 では「設定できる」状態から一歩進めて、「どの組み合わせでも期待通りに動く」「失敗時も理由が分かる」状態まで引き上げる。
+
+加えて、Claude API では実行自体は成功しても、既存実装を踏まえず重複 backlog を作るケースが確認された。これは実行 transport の問題ではなく、PO アシスタントへ渡すコンテキストの精度不足と重複防止ガード不足が原因であるため、Epic 43 では reliability の一部として同時に扱う。
+
+## 現在の確認結果
+
+2026-04-10 時点の手動確認結果は以下。
+
+| 組み合わせ | 状態 | 補足 |
+|-----------|------|------|
+| Claude CLI | ○ | PO アシスタントで backlog 作成まで確認済み |
+| Claude API | ○ | 実行自体は成功。ただし context 不足により既存実装と重複する backlog 提案あり |
+| Gemini CLI | × | headless / trust / cwd 周りの影響が疑われ、タイムアウト継続 |
+| Gemini API | × | 503 UNAVAILABLE が断続的に発生 |
+| Codex CLI | ? | 未検証 |
+| OpenAI API | ? | 未検証 |
 
 ## スコープ
 
-### 対象ファイル（変更）
-- `src-tauri/src/db.rs` — team_roles スキーマ拡張（transport カラム追加の可能性）
-- `src-tauri/src/ai.rs` — PO transport 解決の統一
-- `src-tauri/src/rig_provider.rs` — 設定解決の統一
-- `src/components/ui/TeamSettingsTab.tsx` — transport 選択 UI
-- `src/components/ui/SetupStatusTab.tsx` — 統合ビュー
-- `src/components/ui/GlobalSettingsModal.tsx` — 設定構造の整理
-
-### 対象ファイル（新規マイグレーション）
-- `src-tauri/migrations/XX_transport_unification.sql` — 必要に応じて
+### 対象ファイル（変更候補）
+- `src-tauri/src/ai.rs` — provider / transport ごとのリトライ、エラー整形、PO プロンプト改善
+- `src-tauri/src/db.rs` — `build_project_context()` の見直し、完了済み実装サマリの追加
+- `src-tauri/src/ai_tools.rs` — 重複 backlog 抑止、既存 story への寄せ方改善
+- `src-tauri/src/rig_provider.rs` — API provider ごとの観測・リトライ判断整理
+- `src-tauri/src/cli_runner/gemini.rs` — Gemini CLI の起動条件再設計
+- `src/components/ui/GlobalSettingsModal.tsx` — 必要なら provider 別の注意文や状態表示を追加
+- `docs/43_transport_layer_unification/task.md`
+- `docs/43_transport_layer_unification/walkthrough.md`
+- `docs/43_transport_layer_unification/handoff.md`
 
 ### 対象外
-- 各 CLI Runner の実装変更（Epic 37-38 で完成済み）
-- 各 API Provider の実装変更（Epic 41 で完成済み）
+- Team Settings 全体の transport 統一 UI リデザイン
+- Dev エージェント側の transport 抽象再設計
+- 新しい provider 追加
 
 ## 実装方針
 
-### 1. 統一設定モデル
+### 1. provider / transport 検証マトリクスを先に固定する
 
-Phase 1〜3-A を経て、設定が以下のように分散している（想定）:
+Epic 43 では実装前に「何が通れば完了か」を曖昧にしない。PO アシスタントの 4 機能すべてを一度に全組み合わせで見るのではなく、まず以下の代表シナリオで matrix を埋める。
 
-```
-settings.json:
-  default-ai-provider        → PO の API プロバイダー
-  anthropic-api-key           → Anthropic API キー
-  gemini-api-key              → Gemini API キー
-  openai-api-key              → OpenAI API キー（Epic 41）
-  ollama-endpoint             → Ollama エンドポイント（Epic 41）
-  po-assistant-transport      → PO の transport 種別（Epic 42）
-  po-assistant-cli-type       → PO の CLI 種別（Epic 42）
-  po-assistant-cli-model      → PO の CLI モデル（Epic 42）
+1. `refine_idea`
+2. `generate_tasks_from_story`
+3. `chat_inception`
+4. `chat_with_team_leader` による backlog 作成
 
-team_roles テーブル:
-  cli_type                    → Dev エージェントの CLI 種別（Epic 37）
-  model                       → Dev エージェントのモデル
-```
+特に `chat_with_team_leader` は DB 更新を伴うため、以下を分けて記録する。
 
-**統一後のモデル:**
+- 実行成功 / 失敗
+- DB 反映の有無
+- 最終返信の正常性
+- provider 固有エラーの有無
 
-```
-team_roles テーブル:
-  transport    TEXT NOT NULL DEFAULT 'cli'    -- 'api' | 'cli' | 'local'
-  provider     TEXT NOT NULL DEFAULT 'claude' -- 具体的なツール名
-  model        TEXT NOT NULL                  -- モデル名
+### 2. Gemini CLI の停止要因を再観測可能にする
 
-settings.json:
-  api-keys:     { anthropic, gemini, openai }     -- 認証情報のみ
-  endpoints:    { ollama }                         -- エンドポイント設定のみ
-  po-transport: transport + provider + model       -- PO 固有設定
-```
+現状の Gemini CLI は timeout でしか失敗理由が見えず、再現時の観測情報が不足している。Epic 43 では以下を行う。
 
-### 2. provider の命名規則
+- headless 起動時の `stdout` / `stderr` / exit status を短く要約して返せるようにする
+- timeout 前に取得済みの部分出力があればログとして保存する
+- `cwd`、`--prompt`、stdin、trust folder の影響を切り分けられるようにする
 
-transport と provider の組み合わせ:
+必要なら、Gemini CLI だけ「実行用 cwd」と「コンテキスト取得元 local_path」を分離したまま運用する。
 
-| transport | provider 値 | 説明 |
-|-----------|------------|------|
-| `cli` | `claude` | Claude Code CLI |
-| `cli` | `gemini` | Gemini CLI |
-| `cli` | `codex` | Codex CLI |
-| `api` | `anthropic` | Anthropic API |
-| `api` | `gemini` | Gemini API |
-| `api` | `openai` | OpenAI API |
-| `local` | `ollama` | Ollama ローカル LLM |
+### 3. Gemini API の 503 は一時障害と恒常障害を分ける
 
-### 3. DB マイグレーション（必要に応じて）
+Epic 42 では 503 に対する再試行と通常返答化を入れたが、依然として「未作成で終わる」ケースがある。Epic 43 では以下を整理する。
 
-Epic 37 で追加した `cli_type` を `provider` にリネームし、`transport` カラムを追加する:
+- 503 / UNAVAILABLE の再試行条件を provider ごとに明文化する
+- `create_story_and_tasks` の実行前失敗 / 実行後失敗を区別する
+- 部分成功時の UI 表示を provider 非依存で統一する
 
-```sql
--- transport カラムを追加（既存データは全て cli）
-ALTER TABLE team_roles ADD COLUMN transport TEXT NOT NULL DEFAULT 'cli';
--- cli_type を provider にリネーム（SQLite は ALTER RENAME COLUMN 対応）
-ALTER TABLE team_roles RENAME COLUMN cli_type TO provider;
-```
+### 4. Claude API の重複 backlog 提案は context 精度の問題として扱う
 
-**注意:** SQLite の ALTER RENAME COLUMN は 3.25.0+ で対応。Tauri バンドルの SQLite バージョンを確認すること。非対応の場合はテーブル再作成方式で対応。
+調査結果から、Claude API が DB 設計系 backlog を出した主因は以下。
 
-### 4. チーム設定 UI の最終形
+- `build_project_context()` が `archived = 0` の story / task しか渡していない
+- スプリント完了時に Done task が archive されるため、実装済み事実が context から抜け落ちる
+- `ARCHITECTURE.md` が PostgreSQL 前提のままで、SQLite 移行の現状とズレている
+- `create_story_and_tasks` に重複 story 抑止のガードがない
 
-```
-┌──────────────────────────────────────┐
-│ [アバター] Lead Engineer              │
-│                                      │
-│ 実行方式:  [CLI ▾]                    │
-│ ツール:    [Claude Code ▾]           │
-│ モデル:    [claude-sonnet-4 ▾]       │
-│                                      │
-│ システムプロンプト: [テキスト]          │
-└──────────────────────────────────────┘
+Epic 43 では、PO アシスタント用コンテキストに以下の層を追加することを検討する。
 
-┌──────────────────────────────────────┐
-│ [アバター] Frontend Developer         │
-│                                      │
-│ 実行方式:  [Local ▾]                  │
-│ ツール:    [Ollama ▾]                │
-│ モデル:    [qwen2.5-coder:14b ▾]     │
-│                                      │
-│ システムプロンプト: [テキスト]          │
-└──────────────────────────────────────┘
-```
+- 完了済み story / task の要約
+- 直近で完了した主要実装一覧
+- 「既存 story に統合すべき候補」の判定材料
 
-transport 変更時の連鎖:
-```
-transport: CLI  → provider: claude/gemini/codex  → model: CLI 別デフォルト
-transport: API  → provider: anthropic/gemini/openai → model: API 別デフォルト
-transport: Local → provider: ollama               → model: Ollama モデル一覧
-```
+### 5. tool 側に最後の防波堤を置く
 
-### 5. セットアップ状況タブの推奨構成
+プロンプト改善だけに依存せず、`create_story_and_tasks` 実行直前にも安全策を入れる。
 
-ユーザーの環境に基づいた推奨表示の例:
+候補:
 
-```
-✅ 推奨構成（あなたの環境に基づく）:
-  PO アシスタント: Anthropic API (claude-haiku-4-5) — 高速・低コスト
-  Dev エージェント: Claude Code CLI (claude-sonnet-4) — 高品質コード生成
-
-⚡ 代替構成:
-  完全無料構成: Ollama (PO) + Gemini CLI (Dev) — Gemini CLI は無料枠あり
-```
-
-### 6. Observability の transport 別集計
-
-LLM Usage ダッシュボードに追加:
-
-```
-┌──────────────────────────────────────┐
-│ Transport 別コスト                    │
-│  API:   $1.23 (45 requests)         │
-│  CLI:   N/A   (120 requests)        │
-│  Local: Free  (30 requests)         │
-└──────────────────────────────────────┘
-```
+- 新規 story 作成前に、既存 story のタイトル類似度をチェック
+- 類似 story がある場合は `target_story_id` を要求する、または失敗として返す
+- 同一テーマの未完了 story が存在する場合は、新規作成ではなく task 追加を促す
 
 ## テスト方針
 
-- 異種 transport 混合チームでの一連のフロー:
-  1. PO アシスタント (Ollama) でアイデア → ストーリー作成
-  2. タスク生成
-  3. Dev エージェント (Claude Code CLI) でタスク実行
-  4. 別ロール (Gemini CLI) で別タスク実行
-- 設定変更の永続化と即時反映
-- LLM Usage の transport / provider / model 記録の正確性
-- マイグレーション適用後の既存データ互換性
-- 全 transport / provider 組み合わせでの基本動作確認
+### 自動テスト
+
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `npm run build`
+- context 構築ロジックの unit test
+- provider / transport ごとのエラー整形関数の unit test
+- 重複 backlog 抑止ロジックの unit test
+
+### 手動テスト
+
+以下の matrix を最低限埋める。
+
+1. Claude CLI
+   - backlog 作成
+   - task 生成
+2. Claude API
+   - backlog 作成
+   - 既存実装済み機能に対して重複 story を作らないこと
+3. Gemini CLI
+   - `refine_idea`
+   - `chat_with_team_leader`
+4. Gemini API
+   - 503 発生時の再試行 / 通常返答化
+5. Codex CLI
+   - `refine_idea`
+6. OpenAI API
+   - `chat_with_team_leader`
+
+### 完了条件
+
+- 少なくとも Claude CLI / Claude API / OpenAI API / Codex CLI の基本シナリオが成功する
+- Gemini CLI / Gemini API は、成功するか、失敗理由が UI 上で明確に分かる状態になる
+- Claude API で既存実装と重複する DB 設計 backlog を再作成しない
