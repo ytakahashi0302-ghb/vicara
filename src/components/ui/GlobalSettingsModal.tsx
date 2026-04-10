@@ -16,7 +16,7 @@ import {
 } from '../../hooks/usePoAssistantAvatarImage';
 import { AvatarImageField } from './AvatarImageField';
 import { CliDetectionResult, useCliDetection } from '../../hooks/useCliDetection';
-import { ApiKeyStatus, SetupStatusTab } from './SetupStatusTab';
+import { ApiKeyStatus, OllamaStatus, SetupStatusTab } from './SetupStatusTab';
 import { AnalyticsTab } from './AnalyticsTab';
 
 interface GlobalSettingsModalProps {
@@ -25,9 +25,11 @@ interface GlobalSettingsModalProps {
 }
 
 type SettingsTab = 'setup' | 'general' | 'analytics' | 'ai' | 'team';
-type AiProvider = 'anthropic' | 'gemini';
+type AiProvider = 'anthropic' | 'gemini' | 'openai' | 'ollama';
 type SupportedCliType = 'claude' | 'gemini' | 'codex';
 type InstalledCliMap = Record<SupportedCliType, boolean>;
+
+const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 
 const DEFAULT_TEAM_CONFIGURATION: TeamConfiguration = {
     max_concurrent_agents: 1,
@@ -113,17 +115,39 @@ function collectTeamConfigurationWarnings(
     return Array.from(new Set(messages));
 }
 
-function shouldOpenSetupTab(cliResults: { installed: boolean }[], apiKeyStatuses: ApiKeyStatus[]) {
+function shouldOpenSetupTab(
+    cliResults: { installed: boolean }[],
+    apiKeyStatuses: ApiKeyStatus[],
+    ollamaStatus: OllamaStatus | null,
+) {
     const hasAnyCli = cliResults.some((result) => result.installed);
     const hasAnyApiKey = apiKeyStatuses.some((status) => status.configured);
-    return !hasAnyCli || !hasAnyApiKey;
+    const hasAnyPoAssistantProvider = hasAnyApiKey || Boolean(ollamaStatus?.running);
+    return !hasAnyCli || !hasAnyPoAssistantProvider;
 }
 
 function getAiProviderLabel(provider: AiProvider) {
-    return provider === 'anthropic' ? 'Anthropic (Claude)' : 'Google Gemini';
+    switch (provider) {
+        case 'anthropic':
+            return 'Anthropic (Claude)';
+        case 'gemini':
+            return 'Google Gemini';
+        case 'openai':
+            return 'OpenAI';
+        case 'ollama':
+            return 'Ollama';
+    }
 }
 
-function ConfigurationBadge({ configured }: { configured: boolean }) {
+function ConfigurationBadge({
+    configured,
+    configuredLabel = '設定済み',
+    unconfiguredLabel = '未設定',
+}: {
+    configured: boolean;
+    configuredLabel?: string;
+    unconfiguredLabel?: string;
+}) {
     return (
         <span
             className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${
@@ -133,7 +157,7 @@ function ConfigurationBadge({ configured }: { configured: boolean }) {
             }`}
         >
             {configured ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-            {configured ? '設定済み' : '未設定'}
+            {configured ? configuredLabel : unconfiguredLabel}
         </span>
     );
 }
@@ -156,17 +180,25 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
     const [provider, setProvider] = useState<AiProvider>('anthropic');
     const [anthropicKey, setAnthropicKey] = useState('');
     const [geminiKey, setGeminiKey] = useState('');
+    const [openaiKey, setOpenaiKey] = useState('');
+    const [ollamaEndpoint, setOllamaEndpoint] = useState(DEFAULT_OLLAMA_ENDPOINT);
     const [anthropicModel, setAnthropicModel] = useState('');
     const [geminiModel, setGeminiModel] = useState('');
+    const [openaiModel, setOpenaiModel] = useState('');
+    const [ollamaModel, setOllamaModel] = useState('');
     const [poAssistantAvatarImage, setPoAssistantAvatarImage] = useState<string | null>(null);
     
     // Custom model toggles
     const [isCustomAnthropic, setIsCustomAnthropic] = useState(false);
     const [isCustomGemini, setIsCustomGemini] = useState(false);
+    const [isCustomOpenai, setIsCustomOpenai] = useState(false);
+    const [isCustomOllama, setIsCustomOllama] = useState(false);
     
     // Models list from API
     const [anthropicModelsList, setAnthropicModelsList] = useState<string[]>([]);
     const [geminiModelsList, setGeminiModelsList] = useState<string[]>([]);
+    const [openaiModelsList, setOpenaiModelsList] = useState<string[]>([]);
+    const [ollamaModelsList, setOllamaModelsList] = useState<string[]>([]);
     const [isFetchingModels, setIsFetchingModels] = useState(false);
     const [fetchingModelsProvider, setFetchingModelsProvider] = useState<AiProvider | null>(null);
     
@@ -181,6 +213,11 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
     const [isLoadingApiKeyStatus, setIsLoadingApiKeyStatus] = useState(false);
     const [apiKeyStatusError, setApiKeyStatusError] = useState<string | null>(null);
     const [hasLoadedApiKeyStatus, setHasLoadedApiKeyStatus] = useState(false);
+    const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
+    const [isLoadingOllamaStatus, setIsLoadingOllamaStatus] = useState(false);
+    const [ollamaStatusError, setOllamaStatusError] = useState<string | null>(null);
+    const [hasLoadedOllamaStatus, setHasLoadedOllamaStatus] = useState(false);
+    const [isCheckingOllamaConnection, setIsCheckingOllamaConnection] = useState(false);
     const [hasInitializedTabForOpen, setHasInitializedTabForOpen] = useState(false);
     const [isRefreshingSetupStatus, setIsRefreshingSetupStatus] = useState(false);
 
@@ -203,11 +240,33 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
         }
     }, []);
 
+    const loadOllamaStatus = useCallback(async (endpointOverride?: string) => {
+        setIsLoadingOllamaStatus(true);
+        try {
+            const status = await invoke<OllamaStatus>('check_ollama_status', {
+                endpointOverride: endpointOverride?.trim() ? endpointOverride.trim() : undefined,
+            });
+            setOllamaStatus(status);
+            setOllamaStatusError(null);
+            return status;
+        } catch (error) {
+            const message = String(error);
+            console.error('Failed to load Ollama status', error);
+            setOllamaStatus(null);
+            setOllamaStatusError(message);
+            return null;
+        } finally {
+            setIsLoadingOllamaStatus(false);
+            setHasLoadedOllamaStatus(true);
+        }
+    }, []);
+
     const refreshSetupStatus = useCallback(async (showSpinner = true) => {
         if (showSpinner) {
             setIsRefreshingSetupStatus(true);
         } else {
             setHasLoadedApiKeyStatus(false);
+            setHasLoadedOllamaStatus(false);
         }
 
         try {
@@ -215,13 +274,14 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                 refreshGitStatus(),
                 refreshCliDetection(),
                 loadApiKeyStatus(),
+                loadOllamaStatus(),
             ]);
         } finally {
             if (showSpinner) {
                 setIsRefreshingSetupStatus(false);
             }
         }
-    }, [loadApiKeyStatus, refreshCliDetection, refreshGitStatus]);
+    }, [loadApiKeyStatus, loadOllamaStatus, refreshCliDetection, refreshGitStatus]);
 
     const handleRefreshSetupStatus = useCallback(async () => {
         try {
@@ -241,18 +301,35 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
         } else {
             setHasInitializedTabForOpen(false);
             setHasLoadedApiKeyStatus(false);
+            setHasLoadedOllamaStatus(false);
             setApiKeyStatusError(null);
+            setOllamaStatusError(null);
         }
     }, [isOpen, refreshSetupStatus]);
 
     useEffect(() => {
-        if (!isOpen || hasInitializedTabForOpen || isCliDetectionLoading || !hasLoadedApiKeyStatus) {
+        if (
+            !isOpen ||
+            hasInitializedTabForOpen ||
+            isCliDetectionLoading ||
+            !hasLoadedApiKeyStatus ||
+            !hasLoadedOllamaStatus
+        ) {
             return;
         }
 
-        setActiveTab(shouldOpenSetupTab(cliResults, apiKeyStatuses) ? 'setup' : 'ai');
+        setActiveTab(shouldOpenSetupTab(cliResults, apiKeyStatuses, ollamaStatus) ? 'setup' : 'ai');
         setHasInitializedTabForOpen(true);
-    }, [apiKeyStatuses, cliResults, hasInitializedTabForOpen, hasLoadedApiKeyStatus, isCliDetectionLoading, isOpen]);
+    }, [
+        apiKeyStatuses,
+        cliResults,
+        hasInitializedTabForOpen,
+        hasLoadedApiKeyStatus,
+        hasLoadedOllamaStatus,
+        isCliDetectionLoading,
+        isOpen,
+        ollamaStatus,
+    ]);
 
     const loadSettings = async () => {
         setIsLoadingTeamConfig(true);
@@ -261,30 +338,33 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                 load('settings.json'),
                 invoke<TeamConfiguration>('get_team_configuration'),
             ]);
-            
-            const p = await store.get<{ value: string }>('default-ai-provider');
-            if (p && p.value === 'gemini') setProvider('gemini');
-            else setProvider('anthropic');
-            
-            const ak = await store.get<{ value: string }>('anthropic-api-key');
-            if (ak && ak.value) setAnthropicKey(ak.value);
-            else if (typeof ak === 'string') setAnthropicKey(ak);
-            else setAnthropicKey('');
 
-            const gk = await store.get<{ value: string }>('gemini-api-key');
-            if (gk && gk.value) setGeminiKey(gk.value);
-            else if (typeof gk === 'string') setGeminiKey(gk);
-            else setGeminiKey('');
+            const storedProvider = normalizeStoredStringValue(await store.get('default-ai-provider'));
+            if (
+                storedProvider === 'gemini' ||
+                storedProvider === 'openai' ||
+                storedProvider === 'ollama'
+            ) {
+                setProvider(storedProvider);
+            } else {
+                setProvider('anthropic');
+            }
 
-            const am = await store.get<{ value: string }>('anthropic-model');
-            if (am && am.value) setAnthropicModel(am.value);
-            else if (typeof am === 'string') setAnthropicModel(am);
-            else setAnthropicModel('claude-3-5-sonnet-latest'); // default
+            setAnthropicKey(normalizeStoredStringValue(await store.get('anthropic-api-key')) ?? '');
+            setGeminiKey(normalizeStoredStringValue(await store.get('gemini-api-key')) ?? '');
+            setOpenaiKey(normalizeStoredStringValue(await store.get('openai-api-key')) ?? '');
+            setOllamaEndpoint(
+                normalizeStoredStringValue(await store.get('ollama-endpoint')) ?? DEFAULT_OLLAMA_ENDPOINT,
+            );
 
-            const gm = await store.get<{ value: string }>('gemini-model');
-            if (gm && gm.value) setGeminiModel(gm.value);
-            else if (typeof gm === 'string') setGeminiModel(gm);
-            else setGeminiModel('gemini-2.5-flash'); // default
+            setAnthropicModel(
+                normalizeStoredStringValue(await store.get('anthropic-model')) ?? 'claude-3-5-sonnet-latest',
+            );
+            setGeminiModel(
+                normalizeStoredStringValue(await store.get('gemini-model')) ?? 'gemini-2.5-flash',
+            );
+            setOpenaiModel(normalizeStoredStringValue(await store.get('openai-model')) ?? 'gpt-4o');
+            setOllamaModel(normalizeStoredStringValue(await store.get('ollama-model')) ?? 'llama3.2');
 
             const poAssistantImage = await store.get(PO_ASSISTANT_AVATAR_IMAGE_STORE_KEY);
             setPoAssistantAvatarImage(normalizeStoredStringValue(poAssistantImage));
@@ -299,26 +379,56 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
         }
     };
 
-    const fetchModels = async (targetProvider: 'anthropic' | 'gemini') => {
+    const fetchModels = async (targetProvider: AiProvider) => {
         setIsFetchingModels(true);
         setFetchingModelsProvider(targetProvider);
         try {
-            const models = await invoke<string[]>('get_available_models', { provider: targetProvider });
+            const models = await invoke<string[]>('get_available_models', {
+                provider: targetProvider,
+                apiKeyOverride:
+                    targetProvider === 'anthropic'
+                        ? anthropicKey
+                        : targetProvider === 'gemini'
+                          ? geminiKey
+                          : targetProvider === 'openai'
+                            ? openaiKey
+                            : undefined,
+                endpointOverride: targetProvider === 'ollama' ? ollamaEndpoint : undefined,
+            });
+
             if (targetProvider === 'anthropic') {
                 setAnthropicModelsList(models);
                 if (models.length > 0 && !isCustomAnthropic && !models.includes(anthropicModel)) {
                     setAnthropicModel(models[0]);
                 }
-            } else {
+            } else if (targetProvider === 'gemini') {
                 setGeminiModelsList(models);
                 if (models.length > 0 && !isCustomGemini && !models.includes(geminiModel)) {
                     setGeminiModel(models[0]);
                 }
+            } else if (targetProvider === 'openai') {
+                setOpenaiModelsList(models);
+                if (models.length > 0 && !isCustomOpenai && !models.includes(openaiModel)) {
+                    setOpenaiModel(models[0]);
+                }
+            } else {
+                setOllamaModelsList(models);
+                if (models.length > 0 && !isCustomOllama && !models.includes(ollamaModel)) {
+                    setOllamaModel(models[0]);
+                }
+                setOllamaStatus({
+                    running: true,
+                    models,
+                    endpoint: ollamaEndpoint.trim() || DEFAULT_OLLAMA_ENDPOINT,
+                    message: null,
+                });
+                setOllamaStatusError(null);
             }
-            toast.success(`${targetProvider === 'anthropic' ? 'Anthropic' : 'Gemini'} のモデル一覧を取得しました`);
+
+            toast.success(`${getAiProviderLabel(targetProvider)} のモデル一覧を取得しました`);
         } catch (e) {
             console.error(`Failed to fetch ${targetProvider} models`, e);
-            toast.error(`モデルの取得に失敗しました。APIキーを確認してください。\nError: ${e}`);
+            toast.error(`モデルの取得に失敗しました。設定値を確認してください。\nError: ${e}`);
         } finally {
             setIsFetchingModels(false);
             setFetchingModelsProvider(null);
@@ -330,7 +440,13 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
     const isSaveDisabled = isSaving || isLoadingTeamConfig || teamValidationMessages.length > 0;
     const anthropicConfigured = Boolean(anthropicKey.trim());
     const geminiConfigured = Boolean(geminiKey.trim());
-    const configuredAiProviderCount = Number(anthropicConfigured) + Number(geminiConfigured);
+    const openaiConfigured = Boolean(openaiKey.trim());
+    const ollamaConfigured = Boolean(ollamaStatus?.running);
+    const configuredAiProviderCount =
+        Number(anthropicConfigured) +
+        Number(geminiConfigured) +
+        Number(openaiConfigured) +
+        Number(ollamaConfigured);
     const defaultAiProviderLabel = getAiProviderLabel(provider);
 
     const handleSave = async () => {
@@ -345,8 +461,12 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             await store.set('default-ai-provider', { value: provider });
             await store.set('anthropic-api-key', { value: anthropicKey });
             await store.set('gemini-api-key', { value: geminiKey });
+            await store.set('openai-api-key', { value: openaiKey });
+            await store.set('ollama-endpoint', { value: ollamaEndpoint.trim() || DEFAULT_OLLAMA_ENDPOINT });
             await store.set('anthropic-model', { value: anthropicModel });
             await store.set('gemini-model', { value: geminiModel });
+            await store.set('openai-model', { value: openaiModel });
+            await store.set('ollama-model', { value: ollamaModel });
             await store.set(PO_ASSISTANT_AVATAR_IMAGE_STORE_KEY, { value: poAssistantAvatarImage ?? '' });
             await store.save();
             await invoke('save_team_configuration', { config: teamConfig });
@@ -358,6 +478,34 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
             toast.error('設定の保存に失敗しました');
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    const handleCheckOllamaConnection = async () => {
+        setIsCheckingOllamaConnection(true);
+        try {
+            const status = await loadOllamaStatus(ollamaEndpoint);
+            if (!status) {
+                setOllamaModelsList([]);
+                toast.error('Ollama の接続確認に失敗しました');
+                return;
+            }
+
+            setOllamaModelsList(status.models);
+            if (status.running) {
+                if (status.models.length > 0 && !isCustomOllama && !status.models.includes(ollamaModel)) {
+                    setOllamaModel(status.models[0]);
+                }
+                toast.success(
+                    status.models.length > 0
+                        ? `Ollama に接続しました（${status.models.length} モデル検出）`
+                        : 'Ollama に接続しました',
+                );
+            } else {
+                toast.error(status.message ?? 'Ollama に接続できませんでした');
+            }
+        } finally {
+            setIsCheckingOllamaConnection(false);
         }
     };
 
@@ -480,6 +628,9 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                         apiKeyStatuses={apiKeyStatuses}
                         apiLoading={isLoadingApiKeyStatus}
                         apiError={apiKeyStatusError}
+                        ollamaStatus={ollamaStatus}
+                        ollamaLoading={isLoadingOllamaStatus}
+                        ollamaError={ollamaStatusError}
                         isRefreshing={isRefreshingSetupStatus}
                         onRefresh={handleRefreshSetupStatus}
                     />
@@ -533,10 +684,10 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                     </div>
                                     <div className="rounded-2xl border border-white/70 bg-white/80 p-4 shadow-sm">
                                         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                                            API Keys
+                                            Ready
                                         </div>
-                                        <div className="mt-2 text-2xl font-semibold text-slate-900">{configuredAiProviderCount}/2</div>
-                                        <div className="mt-1 text-sm text-slate-500">現在の入力状態</div>
+                                        <div className="mt-2 text-2xl font-semibold text-slate-900">{configuredAiProviderCount}/4</div>
+                                        <div className="mt-1 text-sm text-slate-500">利用可能なプロバイダー数</div>
                                     </div>
                                 </div>
                             </div>
@@ -574,11 +725,11 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                 </div>
                                 <h3 className="mt-2 text-sm font-semibold text-slate-900">既定AIプロバイダー</h3>
                                 <p className="mt-1 text-sm leading-6 text-slate-600">
-                                    POアシスタントが最初に使う既定プロバイダーを選択します。各カードには、現在の APIキー入力状態も表示します。
+                                    POアシスタントが最初に使う既定プロバイダーを選択します。各カードには、APIキー設定またはローカル稼働状態を表示します。
                                 </p>
                             </div>
 
-                            <div className="mt-5 grid gap-3 md:grid-cols-2">
+                            <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                                 <label
                                     className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${
                                         provider === 'anthropic'
@@ -636,6 +787,68 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                         {provider === 'gemini' ? '現在の既定プロバイダーです。' : 'クリックすると既定プロバイダーに切り替わります。'}
                                     </div>
                                 </label>
+
+                                <label
+                                    className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${
+                                        provider === 'openai'
+                                            ? 'border-emerald-300 bg-emerald-50/80 ring-1 ring-emerald-200'
+                                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                                    }`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="provider"
+                                        value="openai"
+                                        checked={provider === 'openai'}
+                                        onChange={() => setProvider('openai')}
+                                        className="hidden"
+                                    />
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-semibold text-slate-900">OpenAI</div>
+                                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                                                GPT 系モデルを既定にし、ツール呼び出しや汎用対話の選択肢を広げます。
+                                            </p>
+                                        </div>
+                                        <ConfigurationBadge configured={openaiConfigured} />
+                                    </div>
+                                    <div className="mt-4 text-xs font-medium text-emerald-700">
+                                        {provider === 'openai' ? '現在の既定プロバイダーです。' : 'クリックすると既定プロバイダーに切り替わります。'}
+                                    </div>
+                                </label>
+
+                                <label
+                                    className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition-all ${
+                                        provider === 'ollama'
+                                            ? 'border-amber-300 bg-amber-50/80 ring-1 ring-amber-200'
+                                            : 'border-slate-200 bg-white hover:bg-slate-50'
+                                    }`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="provider"
+                                        value="ollama"
+                                        checked={provider === 'ollama'}
+                                        onChange={() => setProvider('ollama')}
+                                        className="hidden"
+                                    />
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-semibold text-slate-900">Ollama</div>
+                                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                                                ローカル LLM を既定にし、API コストをかけずに POアシスタントを運用できます。
+                                            </p>
+                                        </div>
+                                        <ConfigurationBadge
+                                            configured={ollamaConfigured}
+                                            configuredLabel="稼働中"
+                                            unconfiguredLabel="未稼働"
+                                        />
+                                    </div>
+                                    <div className="mt-4 text-xs font-medium text-amber-700">
+                                        {provider === 'ollama' ? '現在の既定プロバイダーです。' : 'クリックすると既定プロバイダーに切り替わります。'}
+                                    </div>
+                                </label>
                             </div>
                         </div>
 
@@ -646,7 +859,7 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                 </div>
                                 <h3 className="mt-2 text-sm font-semibold text-slate-900">プロバイダー設定</h3>
                                 <p className="mt-1 text-sm leading-6 text-slate-600">
-                                    どちらのプロバイダーも事前に設定できます。既定プロバイダーは上で選びつつ、必要に応じて切り替えられる状態を維持できます。
+                                    すべてのプロバイダーを事前に設定できます。既定プロバイダーは上で選びつつ、必要に応じて切り替えられる状態を維持できます。
                                 </p>
                             </div>
 
@@ -822,6 +1035,217 @@ export function GlobalSettingsModal({ isOpen, onClose }: GlobalSettingsModalProp
                                                     checked={isCustomGemini}
                                                     onChange={(e) => setIsCustomGemini(e.target.checked)}
                                                     className="rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                                                />
+                                                カスタムモデル名を手動で入力する
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div
+                                    className={`rounded-2xl border p-5 ${
+                                        provider === 'openai'
+                                            ? 'border-emerald-200 bg-emerald-50/60 shadow-sm'
+                                            : 'border-slate-200 bg-slate-50/40'
+                                    }`}
+                                >
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                        <div className="min-w-0">
+                                            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-600">
+                                                OpenAI
+                                            </div>
+                                            <h4 className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                                <Shield size={16} className="text-slate-500" />
+                                                GPT 系設定
+                                            </h4>
+                                            <p className="mt-1 text-sm leading-6 text-slate-600">
+                                                APIキーとモデルを設定します。保存前の APIキーでもモデル一覧を取得できます。
+                                            </p>
+                                        </div>
+                                        <ConfigurationBadge configured={openaiConfigured} />
+                                    </div>
+
+                                    <div className="mt-5 space-y-4">
+                                        <div>
+                                            <label className="mb-1 block text-sm font-medium text-slate-700">APIキー</label>
+                                            <input
+                                                type="password"
+                                                placeholder="sk-proj-..."
+                                                value={openaiKey}
+                                                onChange={(e) => setOpenaiKey(e.target.value)}
+                                                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <div className="mb-1 flex items-center justify-between gap-3">
+                                                <label className="block text-sm font-medium text-slate-700">モデル</label>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => fetchModels('openai')}
+                                                    disabled={isFetchingModels || !openaiKey.trim()}
+                                                    className="border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50"
+                                                >
+                                                    <RefreshCw
+                                                        size={12}
+                                                        className={`mr-2 ${
+                                                            isFetchingModels && fetchingModelsProvider === 'openai' ? 'animate-spin' : ''
+                                                        }`}
+                                                    />
+                                                    モデル一覧を取得
+                                                </Button>
+                                            </div>
+
+                                            {!isCustomOpenai && openaiModelsList.length > 0 ? (
+                                                <select
+                                                    value={openaiModel}
+                                                    onChange={(e) => setOpenaiModel(e.target.value)}
+                                                    className="mb-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                >
+                                                    {openaiModelsList.map((model) => (
+                                                        <option key={model} value={model}>{model}</option>
+                                                    ))}
+                                                </select>
+                                            ) : (
+                                                <input
+                                                    type="text"
+                                                    placeholder="gpt-4o"
+                                                    value={openaiModel}
+                                                    onChange={(e) => setOpenaiModel(e.target.value)}
+                                                    className="mb-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                                />
+                                            )}
+
+                                            <label className="flex items-center gap-2 text-xs text-slate-500">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isCustomOpenai}
+                                                    onChange={(e) => setIsCustomOpenai(e.target.checked)}
+                                                    className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                                                />
+                                                カスタムモデル名を手動で入力する
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div
+                                    className={`rounded-2xl border p-5 ${
+                                        provider === 'ollama'
+                                            ? 'border-amber-200 bg-amber-50/60 shadow-sm'
+                                            : 'border-slate-200 bg-slate-50/40'
+                                    }`}
+                                >
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                        <div className="min-w-0">
+                                            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-600">
+                                                Ollama
+                                            </div>
+                                            <h4 className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                                                <Shield size={16} className="text-slate-500" />
+                                                ローカル LLM 設定
+                                            </h4>
+                                            <p className="mt-1 text-sm leading-6 text-slate-600">
+                                                エンドポイントとモデルを設定します。接続テストで稼働確認とモデル検出を行えます。
+                                            </p>
+                                        </div>
+                                        <ConfigurationBadge
+                                            configured={ollamaConfigured}
+                                            configuredLabel="稼働中"
+                                            unconfiguredLabel="未稼働"
+                                        />
+                                    </div>
+
+                                    <div className="mt-5 space-y-4">
+                                        <div>
+                                            <div className="mb-1 flex items-center justify-between gap-3">
+                                                <label className="block text-sm font-medium text-slate-700">エンドポイント</label>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={handleCheckOllamaConnection}
+                                                    disabled={isCheckingOllamaConnection}
+                                                    className="border border-amber-200 bg-white text-amber-700 hover:bg-amber-50"
+                                                >
+                                                    <RefreshCw
+                                                        size={12}
+                                                        className={`mr-2 ${isCheckingOllamaConnection ? 'animate-spin' : ''}`}
+                                                    />
+                                                    接続テスト
+                                                </Button>
+                                            </div>
+                                            <input
+                                                type="text"
+                                                placeholder={DEFAULT_OLLAMA_ENDPOINT}
+                                                value={ollamaEndpoint}
+                                                onChange={(e) => setOllamaEndpoint(e.target.value)}
+                                                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            />
+                                            {ollamaStatus && (
+                                                <div
+                                                    className={`mt-2 rounded-xl border px-3 py-2 text-xs ${
+                                                        ollamaStatus.running
+                                                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                            : 'border-amber-200 bg-amber-50 text-amber-700'
+                                                    }`}
+                                                >
+                                                    {ollamaStatus.running
+                                                        ? `${ollamaStatus.endpoint} に接続済みです。${ollamaStatus.models.length} モデルを検出しました。`
+                                                        : ollamaStatus.message ?? 'Ollama の接続確認に失敗しました。'}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div>
+                                            <div className="mb-1 flex items-center justify-between gap-3">
+                                                <label className="block text-sm font-medium text-slate-700">モデル</label>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => fetchModels('ollama')}
+                                                    disabled={isFetchingModels || !ollamaEndpoint.trim()}
+                                                    className="border border-amber-200 bg-white text-amber-700 hover:bg-amber-50"
+                                                >
+                                                    <RefreshCw
+                                                        size={12}
+                                                        className={`mr-2 ${
+                                                            isFetchingModels && fetchingModelsProvider === 'ollama' ? 'animate-spin' : ''
+                                                        }`}
+                                                    />
+                                                    モデル一覧を取得
+                                                </Button>
+                                            </div>
+
+                                            {!isCustomOllama && ollamaModelsList.length > 0 ? (
+                                                <select
+                                                    value={ollamaModel}
+                                                    onChange={(e) => setOllamaModel(e.target.value)}
+                                                    className="mb-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                                >
+                                                    {ollamaModelsList.map((model) => (
+                                                        <option key={model} value={model}>{model}</option>
+                                                    ))}
+                                                </select>
+                                            ) : (
+                                                <input
+                                                    type="text"
+                                                    placeholder="llama3.2"
+                                                    value={ollamaModel}
+                                                    onChange={(e) => setOllamaModel(e.target.value)}
+                                                    className="mb-2 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                                />
+                                            )}
+
+                                            <label className="flex items-center gap-2 text-xs text-slate-500">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isCustomOllama}
+                                                    onChange={(e) => setIsCustomOllama(e.target.checked)}
+                                                    className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
                                                 />
                                                 カスタムモデル名を手動で入力する
                                             </label>

@@ -241,6 +241,10 @@ pub fn resolve_pricing(provider: &str, model: &str) -> PricingSnapshot {
     let provider = provider.to_lowercase();
     let model = model.to_lowercase();
 
+    if provider.contains("ollama") {
+        return PricingSnapshot::zero();
+    }
+
     if provider.contains("anthropic") || provider.contains("claude") || model.contains("claude") {
         if model.contains("opus") {
             return PricingSnapshot {
@@ -295,6 +299,116 @@ pub fn resolve_pricing(provider: &str, model: &str) -> PricingSnapshot {
                 output_cost_per_million: 0.40,
                 cache_creation_cost_per_million: 0.025,
                 cache_read_cost_per_million: 0.0,
+            };
+        }
+    }
+
+    if provider.contains("openai") {
+        if model.starts_with("gpt-5.2") {
+            return PricingSnapshot {
+                input_cost_per_million: 1.75,
+                output_cost_per_million: 14.0,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.175,
+            };
+        }
+
+        if model.starts_with("gpt-5.1") || model == "gpt-5" || model.starts_with("gpt-5-chat") {
+            return PricingSnapshot {
+                input_cost_per_million: 1.25,
+                output_cost_per_million: 10.0,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.125,
+            };
+        }
+
+        if model.starts_with("gpt-5-mini") {
+            return PricingSnapshot {
+                input_cost_per_million: 0.25,
+                output_cost_per_million: 2.0,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.025,
+            };
+        }
+
+        if model.starts_with("gpt-5-nano") {
+            return PricingSnapshot {
+                input_cost_per_million: 0.05,
+                output_cost_per_million: 0.40,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.005,
+            };
+        }
+
+        if model.starts_with("gpt-4.1-mini") {
+            return PricingSnapshot {
+                input_cost_per_million: 0.40,
+                output_cost_per_million: 1.60,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.10,
+            };
+        }
+
+        if model.starts_with("gpt-4.1-nano") {
+            return PricingSnapshot {
+                input_cost_per_million: 0.10,
+                output_cost_per_million: 0.40,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.025,
+            };
+        }
+
+        if model.starts_with("gpt-4.1") {
+            return PricingSnapshot {
+                input_cost_per_million: 2.0,
+                output_cost_per_million: 8.0,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.50,
+            };
+        }
+
+        if model.starts_with("gpt-4o-mini") {
+            return PricingSnapshot {
+                input_cost_per_million: 0.15,
+                output_cost_per_million: 0.60,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.075,
+            };
+        }
+
+        if model.starts_with("gpt-4o-2024-05-13") {
+            return PricingSnapshot {
+                input_cost_per_million: 5.0,
+                output_cost_per_million: 15.0,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.0,
+            };
+        }
+
+        if model.starts_with("gpt-4o") {
+            return PricingSnapshot {
+                input_cost_per_million: 2.50,
+                output_cost_per_million: 10.0,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 1.25,
+            };
+        }
+
+        if model.starts_with("o4-mini") {
+            return PricingSnapshot {
+                input_cost_per_million: 1.10,
+                output_cost_per_million: 4.40,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.275,
+            };
+        }
+
+        if model == "o3" || model.starts_with("o3-") {
+            return PricingSnapshot {
+                input_cost_per_million: 2.0,
+                output_cost_per_million: 8.0,
+                cache_creation_cost_per_million: 0.0,
+                cache_read_cost_per_million: 0.50,
             };
         }
     }
@@ -706,6 +820,22 @@ mod tests {
         let pricing = resolve_pricing("gemini", "gemini-2.0-flash");
         assert_eq!(pricing.input_cost_per_million, 0.10);
         assert_eq!(pricing.output_cost_per_million, 0.40);
+    }
+
+    #[test]
+    fn pricing_for_openai_gpt_4o_is_resolved() {
+        let pricing = resolve_pricing("openai", "gpt-4o");
+        assert_eq!(pricing.input_cost_per_million, 2.50);
+        assert_eq!(pricing.output_cost_per_million, 10.0);
+        assert_eq!(pricing.cache_read_cost_per_million, 1.25);
+    }
+
+    #[test]
+    fn ollama_is_always_treated_as_zero_cost() {
+        let pricing = resolve_pricing("ollama", "llama3.2");
+        assert_eq!(pricing.input_cost_per_million, 0.0);
+        assert_eq!(pricing.output_cost_per_million, 0.0);
+        assert_eq!(pricing.cache_read_cost_per_million, 0.0);
     }
 
     #[test]

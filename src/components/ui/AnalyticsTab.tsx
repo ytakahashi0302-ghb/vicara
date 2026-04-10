@@ -13,8 +13,8 @@ function formatEstimatedCost(value: number) {
     return `~$${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : value >= 1 ? 2 : 3)}`;
 }
 
-function shouldDisplayBreakdownItem(value: { estimated_cost_usd: number }) {
-    return value.estimated_cost_usd > 0;
+function shouldDisplayBreakdownItem(value: { estimated_cost_usd: number; total_tokens: number }) {
+    return value.estimated_cost_usd > 0 || value.total_tokens > 0;
 }
 
 function formatSourceLabel(sourceKind: string) {
@@ -40,6 +40,14 @@ function formatProviderLabel(provider: string, model: string) {
 
     if (normalizedProvider === 'gemini') {
         return 'GEMINI';
+    }
+
+    if (normalizedProvider === 'openai') {
+        return 'OPENAI';
+    }
+
+    if (normalizedProvider === 'ollama') {
+        return 'OLLAMA';
     }
 
     if (

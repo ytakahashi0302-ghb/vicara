@@ -18,6 +18,13 @@ export interface ApiKeyStatus {
     configured: boolean;
 }
 
+export interface OllamaStatus {
+    running: boolean;
+    models: string[];
+    endpoint: string;
+    message: string | null;
+}
+
 interface GitStatus {
     checked: boolean;
     installed: boolean;
@@ -33,6 +40,9 @@ interface SetupStatusTabProps {
     apiKeyStatuses: ApiKeyStatus[];
     apiLoading: boolean;
     apiError: string | null;
+    ollamaStatus: OllamaStatus | null;
+    ollamaLoading: boolean;
+    ollamaError: string | null;
     isRefreshing: boolean;
     onRefresh: () => Promise<void> | void;
 }
@@ -54,6 +64,7 @@ const INSTALL_LINKS: Record<string, string> = {
     claude: 'https://docs.anthropic.com/en/docs/claude-code/quickstart',
     gemini: 'https://github.com/google-gemini/gemini-cli',
     codex: 'https://developers.openai.com/codex/cli',
+    ollama: 'https://ollama.com/download',
 };
 
 function getStatusIcon(tone: StatusTone) {
@@ -171,6 +182,10 @@ function buildApiKeyRows(apiKeyStatuses: ApiKeyStatus[]): StatusRow[] {
             key: 'gemini',
             label: 'Gemini',
         },
+        {
+            key: 'openai',
+            label: 'OpenAI',
+        },
     ].map((provider) => {
         const status = apiKeyStatusMap.get(provider.key);
 
@@ -190,6 +205,49 @@ function buildApiKeyRows(apiKeyStatuses: ApiKeyStatus[]): StatusRow[] {
             tone: status.configured ? 'success' : 'warning',
         };
     });
+}
+
+function buildOllamaRows(ollamaStatus: OllamaStatus | null): StatusRow[] {
+    if (!ollamaStatus) {
+        return [
+            {
+                key: 'ollama',
+                label: 'Ollama',
+                status: '確認中...',
+                tone: 'pending',
+            },
+        ];
+    }
+
+    if (ollamaStatus.running) {
+        const modelCount = ollamaStatus.models.length;
+        return [
+            {
+                key: 'ollama',
+                label: 'Ollama',
+                status: '稼働中',
+                tone: 'success',
+                detail:
+                    modelCount > 0
+                        ? `${ollamaStatus.endpoint} で ${modelCount} モデルを検出しました。`
+                        : `${ollamaStatus.endpoint} へ接続できました。`,
+            },
+        ];
+    }
+
+    return [
+        {
+            key: 'ollama',
+            label: 'Ollama',
+            status: '未稼働',
+            tone: 'warning',
+            detail:
+                ollamaStatus.message ??
+                `${ollamaStatus.endpoint} への接続に失敗しました。Ollama が起動しているか確認してください。`,
+            actionLabel: '導入方法',
+            actionUrl: INSTALL_LINKS.ollama,
+        },
+    ];
 }
 
 function StatusTable({ rows }: { rows: StatusRow[] }) {
@@ -244,12 +302,16 @@ export function SetupStatusTab({
     apiKeyStatuses,
     apiLoading,
     apiError,
+    ollamaStatus,
+    ollamaLoading,
+    ollamaError,
     isRefreshing,
     onRefresh,
 }: SetupStatusTabProps) {
     const toolRows = buildToolRows(gitStatus, cliResults);
     const apiKeyRows = buildApiKeyRows(apiKeyStatuses);
-    const isLoading = cliLoading || apiLoading || !gitStatus.checked;
+    const ollamaRows = buildOllamaRows(ollamaStatus);
+    const isLoading = cliLoading || apiLoading || ollamaLoading || !gitStatus.checked;
 
     return (
         <div className="space-y-5">
@@ -289,6 +351,12 @@ export function SetupStatusTab({
             {apiError && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                     API キー設定の確認に失敗しました: {apiError}
+                </div>
+            )}
+
+            {ollamaError && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    Ollama 状態の確認に失敗しました: {ollamaError}
                 </div>
             )}
 
@@ -334,12 +402,30 @@ export function SetupStatusTab({
                 </div>
             </div>
 
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-2">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
+                        <CheckCircle2 size={18} />
+                    </div>
+                    <div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">
+                            Local Runtime
+                        </div>
+                        <h4 className="text-sm font-semibold text-slate-900">ローカル LLM</h4>
+                    </div>
+                </div>
+
+                <div className="mt-4">
+                    <StatusTable rows={ollamaRows} />
+                </div>
+            </div>
+
             <div className="grid gap-3">
                 <div className="rounded-2xl border border-sky-200 bg-sky-50/80 px-4 py-3 text-sm text-sky-900">
                     Dev エージェント機能には、最低 1 つの CLI ツール + Git が必要です。
                 </div>
                 <div className="rounded-2xl border border-violet-200 bg-violet-50/80 px-4 py-3 text-sm text-violet-900">
-                    PO アシスタント機能には、API キー設定 または CLI ツールが必要です。
+                    PO アシスタント機能には、API キー設定 または Ollama の稼働が必要です。
                 </div>
                 {isLoading && (
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
