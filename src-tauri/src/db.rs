@@ -463,7 +463,7 @@ pub async fn get_team_role_by_id(
 pub async fn get_max_concurrent_agents_value(app: &AppHandle) -> Result<i32, String> {
     let query = "SELECT max_concurrent_agents FROM team_settings WHERE id = 1 LIMIT 1";
     let mut settings = select_query::<TeamSettings>(app, query, vec![]).await?;
-    Ok(settings.pop().map(|s| s.max_concurrent_agents).unwrap_or(1))
+    Ok(settings.pop().map(|s| s.max_concurrent_agents).unwrap_or(5))
 }
 
 async fn insert_default_team_role(
@@ -549,7 +549,7 @@ pub async fn ensure_default_team_templates(app: &AppHandle) -> Result<(), String
         app,
         r#"
         INSERT OR IGNORE INTO team_settings (id, max_concurrent_agents, updated_at)
-        VALUES (1, 1, CURRENT_TIMESTAMP)
+        VALUES (1, 5, CURRENT_TIMESTAMP)
         "#,
         vec![],
     )
@@ -979,7 +979,7 @@ pub async fn get_team_configuration(app: AppHandle) -> Result<TeamConfiguration,
         max_concurrent_agents: settings
             .first()
             .map(|s| s.max_concurrent_agents)
-            .unwrap_or(1),
+            .unwrap_or(5),
         roles,
     })
 }

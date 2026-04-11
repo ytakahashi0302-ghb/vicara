@@ -3,6 +3,7 @@ import {
     AlertTriangle,
     CheckCircle2,
     ExternalLink,
+    Info,
     KeyRound,
     Loader2,
     RefreshCw,
@@ -33,6 +34,7 @@ interface GitStatus {
 }
 
 interface SetupStatusTabProps {
+    embedded?: boolean;
     gitStatus: GitStatus;
     cliResults: CliDetectionResult[];
     cliLoading: boolean;
@@ -252,7 +254,7 @@ function buildOllamaRows(ollamaStatus: OllamaStatus | null): StatusRow[] {
 
 function StatusTable({ rows }: { rows: StatusRow[] }) {
     return (
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
             {rows.map((row, index) => (
                 <div
                     key={row.key}
@@ -295,6 +297,7 @@ function StatusTable({ rows }: { rows: StatusRow[] }) {
 }
 
 export function SetupStatusTab({
+    embedded = false,
     gitStatus,
     cliResults,
     cliLoading,
@@ -315,20 +318,34 @@ export function SetupStatusTab({
 
     return (
         <div className="space-y-5">
-            <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-sky-50 p-5 shadow-sm">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                    <div className="max-w-3xl">
-                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-600">
-                            Setup Dashboard
+            {!embedded && (
+                <div className="rounded-xl border border-slate-200 bg-white p-5">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="max-w-3xl">
+                            <h3 className="text-lg font-semibold text-slate-900">
+                                セットアップ状況
+                            </h3>
+                            <p className="mt-1 text-sm leading-6 text-slate-500">
+                                Git、CLI ツール、API キーの準備状態をまとめて確認できます。未セットアップ項目はこの画面からすぐ導入手順へ移動できます。
+                            </p>
                         </div>
-                        <h3 className="mt-2 text-lg font-semibold text-slate-900">
-                            セットアップ状況
-                        </h3>
-                        <p className="mt-2 text-sm leading-6 text-slate-600">
-                            Git、CLI ツール、API キーの準備状態をまとめて確認できます。未セットアップ項目はこの画面からすぐ導入手順へ移動できます。
-                        </p>
-                    </div>
 
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => void onRefresh()}
+                            disabled={isRefreshing}
+                            className="shrink-0 whitespace-nowrap border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        >
+                            <RefreshCw size={16} className={`mr-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+                            今すぐ再検出
+                        </Button>
+                    </div>
+                </div>
+            )}
+
+            {embedded && (
+                <div className="flex justify-end">
                     <Button
                         type="button"
                         variant="secondary"
@@ -340,7 +357,7 @@ export function SetupStatusTab({
                         今すぐ再検出
                     </Button>
                 </div>
-            </div>
+            )}
 
             {cliError && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -366,72 +383,56 @@ export function SetupStatusTab({
                 </div>
             )}
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center gap-2">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-100 text-sky-700">
-                        <Wrench size={18} />
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-start gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-slate-500 shadow-sm">
+                        <Info size={16} />
                     </div>
-                    <div>
-                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-600">
-                            Development Tools
-                        </div>
-                        <h4 className="text-sm font-semibold text-slate-900">開発ツール</h4>
+                    <div className="min-w-0">
+                        <div className="text-sm font-semibold text-slate-900">補足</div>
+                        <ul className="mt-2 space-y-1 text-sm leading-6 text-slate-600">
+                            <li>Dev エージェント機能には、最低 1 つの CLI ツールと Git の準備が必要です。</li>
+                            <li>PO アシスタント機能には、API キー設定または Ollama の稼働が必要です。</li>
+                            {isLoading && <li>現在のセットアップ状況を確認しています。</li>}
+                        </ul>
                     </div>
                 </div>
+            </div>
 
+            <div className="rounded-xl border border-slate-200 bg-white p-5">
+                <div className="flex items-center gap-2">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
+                        <Wrench size={16} />
+                    </div>
+                    <h4 className="text-sm font-semibold text-slate-900">開発ツール</h4>
+                </div>
                 <div className="mt-4">
                     <StatusTable rows={toolRows} />
                 </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white p-5">
                 <div className="flex items-center gap-2">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-amber-100 text-amber-700">
-                        <KeyRound size={18} />
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
+                        <KeyRound size={16} />
                     </div>
-                    <div>
-                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-600">
-                            API Keys
-                        </div>
-                        <h4 className="text-sm font-semibold text-slate-900">API キー</h4>
-                    </div>
+                    <h4 className="text-sm font-semibold text-slate-900">API キー</h4>
                 </div>
-
                 <div className="mt-4">
                     <StatusTable rows={apiKeyRows} />
                 </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white p-5">
                 <div className="flex items-center gap-2">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
-                        <CheckCircle2 size={18} />
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
+                        <CheckCircle2 size={16} />
                     </div>
-                    <div>
-                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">
-                            Local Runtime
-                        </div>
-                        <h4 className="text-sm font-semibold text-slate-900">ローカル LLM</h4>
-                    </div>
+                    <h4 className="text-sm font-semibold text-slate-900">ローカル LLM</h4>
                 </div>
-
                 <div className="mt-4">
                     <StatusTable rows={ollamaRows} />
                 </div>
-            </div>
-
-            <div className="grid gap-3">
-                <div className="rounded-2xl border border-sky-200 bg-sky-50/80 px-4 py-3 text-sm text-sky-900">
-                    Dev エージェント機能には、最低 1 つの CLI ツール + Git が必要です。
-                </div>
-                <div className="rounded-2xl border border-violet-200 bg-violet-50/80 px-4 py-3 text-sm text-violet-900">
-                    PO アシスタント機能には、API キー設定 または Ollama の稼働が必要です。
-                </div>
-                {isLoading && (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
-                        現在のセットアップ状況を確認しています...
-                    </div>
-                )}
             </div>
         </div>
     );

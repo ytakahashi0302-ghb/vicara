@@ -12,7 +12,8 @@
       "Bash(powershell.exe -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; python3 -c \"\"import sqlite3; conn = sqlite3.connect\\(''C:/Users/green/AppData/Roaming/com.vicara.app/vicara.db''\\); cur = conn.cursor\\(\\); cur.execute\\(''SELECT version, checksum FROM tauri_plugin_sql_migrations ORDER BY version''\\); print\\(cur.fetchall\\(\\)\\); conn.close\\(\\)\"\"\")",
       "Bash(powershell.exe -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; python3 -c \"\"import sqlite3; conn = sqlite3.connect\\(''C:/Users/green/AppData/Roaming/com.vicara.app/vicara.db''\\); cur = conn.cursor\\(\\); cur.execute\\(\\\\\"\"SELECT name FROM sqlite_master WHERE type=''table'' ORDER BY name\\\\\"\"\\); print\\(cur.fetchall\\(\\)\\); conn.close\\(\\)\"\"\")",
       "Bash(python3 -c \":*)",
-      "Bash(powershell.exe -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; vssadmin list shadows 2>&1 | Select-String -Pattern ''Shadow Copy|Creation Time'' | Select-Object -First 10\")"
+      "Bash(powershell.exe -Command \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; vssadmin list shadows 2>&1 | Select-String -Pattern ''Shadow Copy|Creation Time'' | Select-Object -First 10\")",
+      "Bash(npx vite:*)"
     ]
   }
 }

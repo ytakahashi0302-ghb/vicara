@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Avatar } from './Avatar';
 import { getAvatarDefinition, PO_ASSISTANT_ROLE_NAME, resolveAvatarImageSource } from './avatarRegistry';
 import { usePoAssistantAvatarImage } from '../../hooks/usePoAssistantAvatarImage';
+import { AiQuickSwitcher } from '../ui/settings/AiQuickSwitcher';
 
 interface PoAssistantSidebarProps {
     isOpen: boolean;
@@ -198,6 +199,10 @@ export const PoAssistantSidebar: React.FC<PoAssistantSidebarProps> = ({ isOpen, 
                                 <X size={16} />
                             </button>
                         </div>
+                    </div>
+
+                    <div className="border-b border-gray-200 bg-white px-3 py-3 shrink-0">
+                        <AiQuickSwitcher compact />
                     </div>
 
                     {/* Chat History */}

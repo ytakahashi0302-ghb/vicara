@@ -7,6 +7,7 @@ import { ScaffoldingPanel } from './ScaffoldingPanel';
 import { Avatar } from '../ai/Avatar';
 import { usePoAssistantAvatarImage } from '../../hooks/usePoAssistantAvatarImage';
 import { getAvatarDefinition, resolveAvatarImageSource } from '../ai/avatarRegistry';
+import { AiQuickSwitcher } from '../ui/settings/AiQuickSwitcher';
 
 interface ChatMessage {
     role: 'user' | 'assistant';
@@ -345,6 +346,9 @@ export function InceptionDeck() {
                                 <Avatar kind="po-assistant" size="sm" imageSrc={poAssistantAvatarImage} />
                             </div>
                         </div>
+                        <div className="border-b border-gray-200 bg-white px-4 py-3">
+                            <AiQuickSwitcher compact />
+                        </div>
                         <ScaffoldingPanel
                             localPath={currentProject.local_path}
                             projectName={currentProject.name}
@@ -378,6 +382,10 @@ export function InceptionDeck() {
                                     Phase {currentPhase} / 5
                                 </div>
                             </div>
+                        </div>
+
+                        <div className="border-b border-gray-200 bg-white px-4 py-3">
+                            <AiQuickSwitcher compact />
                         </div>
 
                         <div className="relative min-h-0 flex-1 overflow-hidden bg-gradient-to-b from-white via-slate-50/60 to-blue-50/40">

@@ -11,20 +11,17 @@
 
 ## AI連携 & LLM挙動の差異
 - [ ] **Claude CLI 実行分の厳密 usage 計測**: Epic 32 では CLI 実行分について `measurement_status='unavailable'` を許容する。将来的には Claude CLI から機械可読な usage を安全に取得し、文字列パースに依存しない正確な token/cost 計測へ移行する。
-- [ ] **Gemini/Codex CLIの最新引数仕様への追従**: Epic 38で実装したCLI引数（`--sandbox permissive`, `--full-auto`）が最新の公式仕様（`--yolo`, `codex exec` 等）と乖離している可能性があるため、UI実装後の結合テスト時に実機検証し、正しいコマンドへ修正する。
 - [ ] **Claude Code CLI の途中経過表示を stream-json 受信方式へ移行**: 現在の Dev エージェント実装では `claude -p ... --verbose` の headless 実行でログを拾っているが、Claude Code の途中経過を Gemini/Codex と同等に安定表示するには `--output-format stream-json` と partial message ベースの受信・描画フローへ切り替える必要がある。
 - [ ] **Claude Code CLI の出力モード (stream-json) を活用した部分メッセージ表示の改善**: Epic 44 の調査で、現行の `claude -p ... --verbose` では Claude Code の途中経過表示に限界があることを確認した。`--output-format stream-json` を使って partial message を逐次受信し、Dev ターミナルや関連 UI に段階表示できる実装へ改善する。
 
 ## Inception Deck (スプリント0) 関連
-- [ ] **Epic 44: インセプションデッキ作成ウィザードの改善（プロダクトパートナー化）**: 専門用語を避けた親しみやすい対話、エレベーターピッチの自動生成、AIの役割を司会者から伴走者へアップデートする等、UX全般を改善する。
-- [ ] **Inception Deckフェーズ完了後の自動タブ切り替え**: ドキュメント（差分）生成時に、対応するプレビュータブ（CONTEXT / ARCHITECTURE / RULE）を自動でアクティブにするUX改善。
 - [ ] **生成ドキュメントのユーザー直接編集機能**: 右ペインのMarkdown表示をエディタに切り替え可能にし、AIが生成した内容をユーザーが手動で最終調整できるようにする。
-- [ ] **フェーズ移行のUI化未済**: 次のフェーズへ進む際、現在はAIの応答に依存している。「次のフェーズへ進む」ボタン等によって明確に状態遷移をトリガーできるUI・制御ロジックを実装する。
 
 ## アーキテクチャ & 状態管理・安全性
 - [ ] **タイマー稼働中の新規プロジェクト作成ガード漏れ**: スプリントタイマーが稼働中（RUNNING）にヘッダーから新規プロジェクトを作成すると、Interaction Guardが発動せず状態が引き継がれてしまう。レアケースとして現状許容中。
 - [ ] **CRUD操作時の全件再フェッチ**: ストーリー等の追加・更新時に現状は `fetchStories()` 等でリストを全件再取得している。データ量増加時の遅延・チラつき防止のため、楽観的UI (Optimistic UI) への段階的移行を検討する。
 - [ ] **TauriコマンドのContext未公開**: `update_project` や `delete_project` が WorkspaceContext 経由で呼び出せるようになっていないため、呼び出し経路が統一されていない箇所がある。
+- [ ] **Team設定の最大並行稼働数が実行系に十分反映されているか要検証**: 設定 UI では `max_concurrent_agents` を変更できるが、実際のマルチエージェント起動時に期待どおり上限として効いているか再検証が必要。必要に応じて UI / IPC / 実行管理の接続を見直す。
 - [ ] **Reviewプレビューの技術スタック判定が暫定実装**: 現在の簡易プレビューは `ARCHITECTURE.md` をもとに `npm run dev` または `npm run serve` だけを許可し、それ以外のスタックは未対応としている。将来的には `package.json` / 実行環境 / ネイティブアプリ種別も含めた正式なプレビュー起動戦略へ拡張する必要がある。
 - [ ] **Git実行環境の完全な隠蔽**: 現在は `std::process::Command` でローカルの Git CLI を呼び出している。将来的には `git2-rs` 等のライブラリ移行、またはポータブルGitの同梱により、ユーザー環境依存をさらに排除する必要がある。
 - [ ] **AIによるGit操作の専用署名対応**: 現在のシステムでは、AIによる自動コミット（`git.rs` 内での commit や merge 等）が、ユーザーのローカルPCのグローバルGit設定名で記録されてしまう。AIが実行するGitコマンドに対して「AI専用の署名」を行う機能を実装し、誰（何）が変更を行ったかを明確にする。

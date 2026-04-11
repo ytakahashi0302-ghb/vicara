@@ -2,6 +2,7 @@ import { Coins } from 'lucide-react';
 import { useLlmUsageSummary } from '../../hooks/useLlmUsageSummary';
 
 interface AnalyticsTabProps {
+    embedded?: boolean;
     projectId: string;
 }
 
@@ -72,7 +73,7 @@ function formatProviderLabel(provider: string, model: string) {
     return provider.toUpperCase();
 }
 
-export function AnalyticsTab({ projectId }: AnalyticsTabProps) {
+export function AnalyticsTab({ embedded = false, projectId }: AnalyticsTabProps) {
     const {
         summary: usageSummary,
         loading: usageLoading,
@@ -83,18 +84,27 @@ export function AnalyticsTab({ projectId }: AnalyticsTabProps) {
 
     return (
         <div className="space-y-6">
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-5 shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white p-5">
                 <div className="mb-4 flex items-start justify-between gap-3">
                     <div>
-                        <h3 className="flex items-center gap-2 font-medium text-gray-900">
-                            <Coins size={16} className="text-emerald-700" />
-                            LLM Observability
-                        </h3>
-                        <p className="mt-1 text-sm text-gray-600">
-                            プロジェクト全体とアクティブスプリント内での LLM 使用量を確認できます。
-                        </p>
+                        {!embedded && (
+                            <>
+                                <h3 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+                                    <Coins size={16} className="text-slate-500" />
+                                    LLM Observability
+                                </h3>
+                                <p className="mt-1 text-sm text-slate-500">
+                                    プロジェクト全体とアクティブスプリント内での LLM 使用量を確認できます。
+                                </p>
+                            </>
+                        )}
+                        {embedded && (
+                            <div className="text-sm text-slate-500">
+                                プロジェクト全体とアクティブスプリント内での LLM 使用量を確認できます。
+                            </div>
+                        )}
                     </div>
-                    <div className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-700">
+                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
                         {usageLoading ? '更新中...' : '概算コスト'}
                     </div>
                 </div>
