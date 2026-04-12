@@ -170,16 +170,12 @@ function AppHeader({
             <div className="w-full px-4 sm:px-6 lg:px-8">
                 <div className="flex min-h-16 flex-wrap items-center justify-between gap-3 py-3">
                     {/* Brand */}
-                    <div className="flex min-w-0 items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white p-0.5 shadow-sm">
-                            <img src="/logos/logo.svg" alt="Vicara Logo" className="h-full w-full object-contain" />
-                        </div>
-                        <div className="min-w-0">
-                            <div className="app-brand-wordmark text-lg text-slate-900">vicara</div>
-                            <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-                                人間中心のAIチーム開発
-                            </div>
-                        </div>
+                    <div className="flex min-w-0 items-center">
+                        <img
+                            src="/logos/banner.png"
+                            alt="Vicara"
+                            className="h-10 w-auto object-contain sm:h-12 lg:h-[52px]"
+                        />
                     </div>
 
                     {/* Inception Deck / Kanban / Settings segmented toggle */}
