@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::sqlite::SqliteRow;
+use sqlx::{sqlite::SqliteRow, SqlitePool};
 use std::collections::HashSet;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_sql::{DbInstances, DbPool};
@@ -13,6 +13,10 @@ pub struct QueryResult {
 }
 
 const VALID_TASK_STATUSES: &[&str] = &["To Do", "In Progress", "Review", "Done"];
+const VALID_RETRO_SESSION_STATUSES: &[&str] = &["draft", "in_progress", "completed"];
+const VALID_RETRO_ITEM_CATEGORIES: &[&str] = &["keep", "problem", "try"];
+const VALID_RETRO_ITEM_SOURCES: &[&str] = &["agent", "po", "sm", "user"];
+const VALID_PROJECT_NOTE_SOURCES: &[&str] = &["user", "po_assistant"];
 #[allow(dead_code)]
 const VALID_WORKTREE_STATUSES: &[&str] = &["active", "merging", "merged", "conflict", "removed"];
 
@@ -23,6 +27,50 @@ fn validate_task_status(status: &str) -> Result<(), String> {
         Err(format!(
             "status には {} のいずれかを指定してください。",
             VALID_TASK_STATUSES.join(", ")
+        ))
+    }
+}
+
+fn validate_retro_session_status(status: &str) -> Result<(), String> {
+    if VALID_RETRO_SESSION_STATUSES.contains(&status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "retro session status には {} のいずれかを指定してください。",
+            VALID_RETRO_SESSION_STATUSES.join(", ")
+        ))
+    }
+}
+
+fn validate_retro_item_category(category: &str) -> Result<(), String> {
+    if VALID_RETRO_ITEM_CATEGORIES.contains(&category) {
+        Ok(())
+    } else {
+        Err(format!(
+            "retro item category には {} のいずれかを指定してください。",
+            VALID_RETRO_ITEM_CATEGORIES.join(", ")
+        ))
+    }
+}
+
+fn validate_retro_item_source(source: &str) -> Result<(), String> {
+    if VALID_RETRO_ITEM_SOURCES.contains(&source) {
+        Ok(())
+    } else {
+        Err(format!(
+            "retro item source には {} のいずれかを指定してください。",
+            VALID_RETRO_ITEM_SOURCES.join(", ")
+        ))
+    }
+}
+
+fn validate_project_note_source(source: &str) -> Result<(), String> {
+    if VALID_PROJECT_NOTE_SOURCES.contains(&source) {
+        Ok(())
+    } else {
+        Err(format!(
+            "project note source には {} のいずれかを指定してください。",
+            VALID_PROJECT_NOTE_SOURCES.join(", ")
         ))
     }
 }
@@ -123,6 +171,54 @@ pub struct Sprint {
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
     pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct RetroSession {
+    pub id: String,
+    pub project_id: String,
+    pub sprint_id: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct RetroItem {
+    pub id: String,
+    pub retro_session_id: String,
+    pub category: String,
+    pub content: String,
+    pub source: String,
+    pub source_role_id: Option<String>,
+    pub is_approved: bool,
+    pub sort_order: i32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct RetroRule {
+    pub id: String,
+    pub project_id: String,
+    pub retro_item_id: Option<String>,
+    pub sprint_id: Option<String>,
+    pub content: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+pub struct ProjectNote {
+    pub id: String,
+    pub project_id: String,
+    pub sprint_id: Option<String>,
+    pub title: String,
+    pub content: String,
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -1132,6 +1228,36 @@ pub async fn set_task_dependencies(
 // Sprints CRUD
 // ------------------------------------------------------------------------------------------------
 
+async fn ensure_draft_retro_session(
+    pool: &SqlitePool,
+    project_id: &str,
+    sprint_id: &str,
+) -> Result<(), String> {
+    let existing_session_id: Option<String> =
+        sqlx::query_scalar("SELECT id FROM retro_sessions WHERE sprint_id = ? LIMIT 1")
+            .bind(sprint_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    if existing_session_id.is_some() {
+        return Ok(());
+    }
+
+    let retro_session_id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO retro_sessions (id, project_id, sprint_id, status) VALUES (?, ?, ?, 'draft')",
+    )
+    .bind(&retro_session_id)
+    .bind(project_id)
+    .bind(sprint_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_sprints(app: AppHandle, project_id: String) -> Result<Vec<Sprint>, String> {
     let query = "SELECT * FROM sprints WHERE project_id = ? ORDER BY started_at DESC";
@@ -1281,7 +1407,326 @@ pub async fn complete_sprint(
 
     tx.commit().await.map_err(|e| e.to_string())?;
 
+    if let Err(error) = ensure_draft_retro_session(pool, &project_id, &sprint_id).await {
+        log::warn!(
+            "Failed to create draft retro session for sprint {} in project {}: {}",
+            sprint_id,
+            project_id,
+            error
+        );
+    }
+
     Ok(true)
+}
+
+// ------------------------------------------------------------------------------------------------
+// Retrospective CRUD
+// ------------------------------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_retro_sessions(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Vec<RetroSession>, String> {
+    let query =
+        "SELECT * FROM retro_sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC";
+    let values = vec![serde_json::to_value(project_id).unwrap()];
+    select_query::<RetroSession>(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn get_retro_session(app: AppHandle, id: String) -> Result<Option<RetroSession>, String> {
+    let query = "SELECT * FROM retro_sessions WHERE id = ? LIMIT 1";
+    let values = vec![serde_json::to_value(id).unwrap()];
+    let mut sessions = select_query::<RetroSession>(&app, query, values).await?;
+    Ok(sessions.pop())
+}
+
+#[tauri::command]
+pub async fn create_retro_session(
+    app: AppHandle,
+    project_id: String,
+    sprint_id: String,
+    status: Option<String>,
+    summary: Option<String>,
+) -> Result<RetroSession, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let status_value = status.unwrap_or_else(|| "draft".to_string());
+    validate_retro_session_status(&status_value)?;
+
+    let existing_query = "SELECT * FROM retro_sessions WHERE sprint_id = ? LIMIT 1";
+    let existing_values = vec![serde_json::to_value(&sprint_id).unwrap()];
+    let existing_sessions =
+        select_query::<RetroSession>(&app, existing_query, existing_values).await?;
+    if !existing_sessions.is_empty() {
+        return Err("この sprint_id には既に retro_session が存在します".to_string());
+    }
+
+    let query =
+        "INSERT INTO retro_sessions (id, project_id, sprint_id, status, summary) VALUES (?, ?, ?, ?, ?)";
+    let values = vec![
+        serde_json::to_value(&id).unwrap(),
+        serde_json::to_value(&project_id).unwrap(),
+        serde_json::to_value(&sprint_id).unwrap(),
+        serde_json::to_value(&status_value).unwrap(),
+        serde_json::to_value(&summary).unwrap(),
+    ];
+    execute_query(&app, query, values).await?;
+
+    let get_query = "SELECT * FROM retro_sessions WHERE id = ? LIMIT 1";
+    let get_values = vec![serde_json::to_value(&id).unwrap()];
+    let mut sessions = select_query::<RetroSession>(&app, get_query, get_values).await?;
+    sessions
+        .pop()
+        .ok_or("Failed to fetch created retro session".to_string())
+}
+
+#[tauri::command]
+pub async fn update_retro_session(
+    app: AppHandle,
+    id: String,
+    status: String,
+    summary: Option<String>,
+) -> Result<QueryResult, String> {
+    validate_retro_session_status(&status)?;
+    let query =
+        "UPDATE retro_sessions SET status = ?, summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    let values = vec![
+        serde_json::to_value(status).unwrap(),
+        serde_json::to_value(summary).unwrap(),
+        serde_json::to_value(id).unwrap(),
+    ];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn delete_retro_session(app: AppHandle, id: String) -> Result<QueryResult, String> {
+    let query = "DELETE FROM retro_sessions WHERE id = ?";
+    let values = vec![serde_json::to_value(id).unwrap()];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn get_retro_items(
+    app: AppHandle,
+    retro_session_id: String,
+) -> Result<Vec<RetroItem>, String> {
+    let query = "SELECT * FROM retro_items WHERE retro_session_id = ? ORDER BY sort_order ASC, created_at ASC, id ASC";
+    let values = vec![serde_json::to_value(retro_session_id).unwrap()];
+    select_query::<RetroItem>(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn add_retro_item(
+    app: AppHandle,
+    retro_session_id: String,
+    category: String,
+    content: String,
+    source: String,
+    source_role_id: Option<String>,
+    sort_order: Option<i32>,
+) -> Result<RetroItem, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let sort_order_value = sort_order.unwrap_or(0);
+    validate_retro_item_category(&category)?;
+    validate_retro_item_source(&source)?;
+
+    let query = "INSERT INTO retro_items (id, retro_session_id, category, content, source, source_role_id, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    let values = vec![
+        serde_json::to_value(&id).unwrap(),
+        serde_json::to_value(&retro_session_id).unwrap(),
+        serde_json::to_value(&category).unwrap(),
+        serde_json::to_value(&content).unwrap(),
+        serde_json::to_value(&source).unwrap(),
+        serde_json::to_value(&source_role_id).unwrap(),
+        serde_json::to_value(sort_order_value).unwrap(),
+    ];
+    execute_query(&app, query, values).await?;
+
+    let get_query = "SELECT * FROM retro_items WHERE id = ? LIMIT 1";
+    let get_values = vec![serde_json::to_value(&id).unwrap()];
+    let mut items = select_query::<RetroItem>(&app, get_query, get_values).await?;
+    items
+        .pop()
+        .ok_or("Failed to fetch created retro item".to_string())
+}
+
+#[tauri::command]
+pub async fn update_retro_item(
+    app: AppHandle,
+    id: String,
+    category: String,
+    content: String,
+    source: String,
+    source_role_id: Option<String>,
+    sort_order: Option<i32>,
+) -> Result<QueryResult, String> {
+    let sort_order_value = sort_order.unwrap_or(0);
+    validate_retro_item_category(&category)?;
+    validate_retro_item_source(&source)?;
+
+    let query =
+        "UPDATE retro_items SET category = ?, content = ?, source = ?, source_role_id = ?, sort_order = ? WHERE id = ?";
+    let values = vec![
+        serde_json::to_value(category).unwrap(),
+        serde_json::to_value(content).unwrap(),
+        serde_json::to_value(source).unwrap(),
+        serde_json::to_value(source_role_id).unwrap(),
+        serde_json::to_value(sort_order_value).unwrap(),
+        serde_json::to_value(id).unwrap(),
+    ];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn delete_retro_item(app: AppHandle, id: String) -> Result<QueryResult, String> {
+    let query = "DELETE FROM retro_items WHERE id = ?";
+    let values = vec![serde_json::to_value(id).unwrap()];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn approve_retro_item(app: AppHandle, id: String) -> Result<QueryResult, String> {
+    let query = "UPDATE retro_items SET is_approved = 1 WHERE id = ?";
+    let values = vec![serde_json::to_value(id).unwrap()];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn get_retro_rules(app: AppHandle, project_id: String) -> Result<Vec<RetroRule>, String> {
+    let query = "SELECT * FROM retro_rules WHERE project_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC";
+    let values = vec![serde_json::to_value(project_id).unwrap()];
+    select_query::<RetroRule>(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn add_retro_rule(
+    app: AppHandle,
+    project_id: String,
+    retro_item_id: Option<String>,
+    sprint_id: Option<String>,
+    content: String,
+    is_active: Option<bool>,
+) -> Result<RetroRule, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let is_active_value = if is_active.unwrap_or(true) { 1 } else { 0 };
+
+    let query = "INSERT INTO retro_rules (id, project_id, retro_item_id, sprint_id, content, is_active) VALUES (?, ?, ?, ?, ?, ?)";
+    let values = vec![
+        serde_json::to_value(&id).unwrap(),
+        serde_json::to_value(&project_id).unwrap(),
+        serde_json::to_value(&retro_item_id).unwrap(),
+        serde_json::to_value(&sprint_id).unwrap(),
+        serde_json::to_value(&content).unwrap(),
+        serde_json::to_value(is_active_value).unwrap(),
+    ];
+    execute_query(&app, query, values).await?;
+
+    let get_query = "SELECT * FROM retro_rules WHERE id = ? LIMIT 1";
+    let get_values = vec![serde_json::to_value(&id).unwrap()];
+    let mut rules = select_query::<RetroRule>(&app, get_query, get_values).await?;
+    rules
+        .pop()
+        .ok_or("Failed to fetch created retro rule".to_string())
+}
+
+#[tauri::command]
+pub async fn update_retro_rule(
+    app: AppHandle,
+    id: String,
+    retro_item_id: Option<String>,
+    sprint_id: Option<String>,
+    content: String,
+    is_active: bool,
+) -> Result<QueryResult, String> {
+    let is_active_value = if is_active { 1 } else { 0 };
+    let query = "UPDATE retro_rules SET retro_item_id = ?, sprint_id = ?, content = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    let values = vec![
+        serde_json::to_value(retro_item_id).unwrap(),
+        serde_json::to_value(sprint_id).unwrap(),
+        serde_json::to_value(content).unwrap(),
+        serde_json::to_value(is_active_value).unwrap(),
+        serde_json::to_value(id).unwrap(),
+    ];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn delete_retro_rule(app: AppHandle, id: String) -> Result<QueryResult, String> {
+    let query = "DELETE FROM retro_rules WHERE id = ?";
+    let values = vec![serde_json::to_value(id).unwrap()];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn get_project_notes(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Vec<ProjectNote>, String> {
+    let query =
+        "SELECT * FROM project_notes WHERE project_id = ? ORDER BY created_at DESC, id DESC";
+    let values = vec![serde_json::to_value(project_id).unwrap()];
+    select_query::<ProjectNote>(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn add_project_note(
+    app: AppHandle,
+    project_id: String,
+    sprint_id: Option<String>,
+    title: String,
+    content: String,
+    source: Option<String>,
+) -> Result<ProjectNote, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let source_value = source.unwrap_or_else(|| "user".to_string());
+    validate_project_note_source(&source_value)?;
+
+    let query = "INSERT INTO project_notes (id, project_id, sprint_id, title, content, source) VALUES (?, ?, ?, ?, ?, ?)";
+    let values = vec![
+        serde_json::to_value(&id).unwrap(),
+        serde_json::to_value(&project_id).unwrap(),
+        serde_json::to_value(&sprint_id).unwrap(),
+        serde_json::to_value(&title).unwrap(),
+        serde_json::to_value(&content).unwrap(),
+        serde_json::to_value(&source_value).unwrap(),
+    ];
+    execute_query(&app, query, values).await?;
+
+    let get_query = "SELECT * FROM project_notes WHERE id = ? LIMIT 1";
+    let get_values = vec![serde_json::to_value(&id).unwrap()];
+    let mut notes = select_query::<ProjectNote>(&app, get_query, get_values).await?;
+    notes
+        .pop()
+        .ok_or("Failed to fetch created project note".to_string())
+}
+
+#[tauri::command]
+pub async fn update_project_note(
+    app: AppHandle,
+    id: String,
+    sprint_id: Option<String>,
+    title: String,
+    content: String,
+    source: String,
+) -> Result<QueryResult, String> {
+    validate_project_note_source(&source)?;
+    let query = "UPDATE project_notes SET sprint_id = ?, title = ?, content = ?, source = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    let values = vec![
+        serde_json::to_value(sprint_id).unwrap(),
+        serde_json::to_value(title).unwrap(),
+        serde_json::to_value(content).unwrap(),
+        serde_json::to_value(source).unwrap(),
+        serde_json::to_value(id).unwrap(),
+    ];
+    execute_query(&app, query, values).await
+}
+
+#[tauri::command]
+pub async fn delete_project_note(app: AppHandle, id: String) -> Result<QueryResult, String> {
+    let query = "DELETE FROM project_notes WHERE id = ?";
+    let values = vec![serde_json::to_value(id).unwrap()];
+    execute_query(&app, query, values).await
 }
 
 #[tauri::command]
@@ -1739,7 +2184,11 @@ pub async fn insert_story_with_tasks(
 
 #[cfg(test)]
 mod tests {
-    use super::{render_archived_context_summary, summarize_context_value, Story, Task};
+    use super::{
+        ensure_draft_retro_session, render_archived_context_summary, summarize_context_value,
+        Story, Task,
+    };
+    use sqlx::SqlitePool;
 
     fn sample_story(id: &str, title: &str, archived: bool) -> Story {
         Story {
@@ -1779,6 +2228,68 @@ mod tests {
         }
     }
 
+    async fn setup_retro_session_test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("PRAGMA foreign_keys = ON;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                local_path TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE sprints (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                status TEXT NOT NULL,
+                started_at INTEGER,
+                completed_at INTEGER,
+                duration_ms INTEGER
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE retro_sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'draft',
+                summary TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO projects (id, name) VALUES ('project-1', 'Retro Test Project')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO sprints (id, project_id, status) VALUES ('sprint-1', 'project-1', 'Completed')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        pool
+    }
+
     #[test]
     fn summarize_context_value_collapses_whitespace() {
         assert_eq!(
@@ -1798,5 +2309,51 @@ mod tests {
         assert!(summary.contains("通知設定画面を追加"));
         assert!(summary.contains("完了済み Task"));
         assert!(summary.contains("設定保存APIを実装"));
+    }
+
+    #[tokio::test]
+    async fn ensure_draft_retro_session_creates_single_draft_session() {
+        let pool = setup_retro_session_test_pool().await;
+
+        ensure_draft_retro_session(&pool, "project-1", "sprint-1")
+            .await
+            .unwrap();
+
+        let sessions: Vec<(String, String)> =
+            sqlx::query_as("SELECT sprint_id, status FROM retro_sessions")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].0, "sprint-1");
+        assert_eq!(sessions[0].1, "draft");
+    }
+
+    #[tokio::test]
+    async fn ensure_draft_retro_session_skips_duplicate_creation() {
+        let pool = setup_retro_session_test_pool().await;
+
+        sqlx::query(
+            "INSERT INTO retro_sessions (id, project_id, sprint_id, status) VALUES (?, ?, ?, ?)",
+        )
+        .bind("retro-existing")
+        .bind("project-1")
+        .bind("sprint-1")
+        .bind("draft")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        ensure_draft_retro_session(&pool, "project-1", "sprint-1")
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM retro_sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
     }
 }
