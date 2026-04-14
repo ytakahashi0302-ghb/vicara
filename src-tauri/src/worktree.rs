@@ -53,6 +53,7 @@ impl WorktreeState {
 }
 
 const WORKTREE_DIR: &str = ".vicara-worktrees";
+const WORKTREE_IGNORE_ENTRY: &str = ".vicara-worktrees/";
 
 fn worktree_path(project_path: &str, task_id: &str) -> PathBuf {
     Path::new(project_path)
@@ -138,34 +139,163 @@ async fn resolve_worktree_path_for_task(
         .unwrap_or_else(|| worktree_path(project_path, task_id)))
 }
 
-fn ensure_gitignore_entry(project_path: &Path) -> Result<(), String> {
-    let gitignore = project_path.join(".gitignore");
-    let entry = format!("{}/", WORKTREE_DIR);
-
-    if gitignore.exists() {
-        let content = std::fs::read_to_string(&gitignore)
-            .map_err(|e| format!(".gitignore読み込みエラー: {}", e))?;
-        if content.lines().any(|line| line.trim() == entry.trim()) {
+fn append_unique_ignore_entry(
+    file_path: &Path,
+    entry: &str,
+    read_label: &str,
+    write_label: &str,
+) -> Result<(), String> {
+    let existing_content = if file_path.exists() {
+        let content =
+            std::fs::read_to_string(file_path).map_err(|e| format!("{}: {}", read_label, e))?;
+        if content.lines().any(|line| line.trim() == entry) {
             return Ok(());
         }
-    }
+        Some(content)
+    } else {
+        None
+    };
 
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&gitignore)
-        .map_err(|e| format!(".gitignore書き込みエラー: {}", e))?;
+        .open(file_path)
+        .map_err(|e| format!("{}: {}", write_label, e))?;
 
-    if gitignore.exists() {
-        let content = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    if let Some(content) = existing_content {
         if !content.is_empty() && !content.ends_with('\n') {
-            writeln!(file).map_err(|e| format!(".gitignore書き込みエラー: {}", e))?;
+            writeln!(file).map_err(|e| format!("{}: {}", write_label, e))?;
         }
     }
-    writeln!(file, "{}", entry).map_err(|e| format!(".gitignore書き込みエラー: {}", e))?;
+    writeln!(file, "{}", entry).map_err(|e| format!("{}: {}", write_label, e))?;
 
     Ok(())
+}
+
+fn normalize_lines_for_compare(content: &str) -> Vec<String> {
+    let mut lines: Vec<String> = content
+        .replace("\r\n", "\n")
+        .split('\n')
+        .map(|line| line.to_string())
+        .collect();
+
+    while matches!(lines.last(), Some(last) if last.is_empty()) {
+        lines.pop();
+    }
+
+    lines
+}
+
+fn contains_worktree_ignore_entry(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.trim() == WORKTREE_IGNORE_ENTRY)
+}
+
+fn lines_without_worktree_ignore_entry(content: &str) -> Vec<String> {
+    normalize_lines_for_compare(content)
+        .into_iter()
+        .filter(|line| line.trim() != WORKTREE_IGNORE_ENTRY)
+        .collect()
+}
+
+fn ensure_local_exclude_entry(project_path: &Path) -> Result<(), String> {
+    let exclude_path = git::resolve_git_internal_path(project_path, "info/exclude")?;
+    if let Some(parent) = exclude_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!(".git/info ディレクトリ作成エラー: {}", e))?;
+    }
+
+    append_unique_ignore_entry(
+        &exclude_path,
+        WORKTREE_IGNORE_ENTRY,
+        ".git/info/exclude読み込みエラー",
+        ".git/info/exclude書き込みエラー",
+    )
+}
+
+fn migrate_legacy_worktree_gitignore(project_path: &Path) -> Result<bool, String> {
+    ensure_local_exclude_entry(project_path)?;
+
+    let gitignore_path = project_path.join(".gitignore");
+    if !gitignore_path.exists() {
+        return Ok(false);
+    }
+
+    let current_content = std::fs::read_to_string(&gitignore_path)
+        .map_err(|e| format!(".gitignore読み込みエラー: {}", e))?;
+    if !contains_worktree_ignore_entry(&current_content) {
+        return Ok(false);
+    }
+
+    if let Some(head_content) = git::read_head_file(project_path, ".gitignore")? {
+        if contains_worktree_ignore_entry(&head_content) {
+            return Ok(false);
+        }
+
+        if lines_without_worktree_ignore_entry(&current_content)
+            == normalize_lines_for_compare(&head_content)
+        {
+            std::fs::write(&gitignore_path, head_content)
+                .map_err(|e| format!(".gitignore移行書き込みエラー: {}", e))?;
+            return Ok(true);
+        }
+
+        return Ok(false);
+    }
+
+    if lines_without_worktree_ignore_entry(&current_content).is_empty() {
+        std::fs::remove_file(&gitignore_path)
+            .map_err(|e| format!(".gitignore削除エラー: {}", e))?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn gitignore_has_legacy_worktree_entry(project_path: &Path) -> bool {
+    let gitignore_path = project_path.join(".gitignore");
+    if !gitignore_path.exists() {
+        return false;
+    }
+
+    std::fs::read_to_string(gitignore_path)
+        .map(|content| contains_worktree_ignore_entry(&content))
+        .unwrap_or(false)
+}
+
+fn build_dirty_project_root_message(project_path: &Path, status: &str) -> String {
+    let mut details = status
+        .lines()
+        .take(5)
+        .map(|line| format!("- {}", line))
+        .collect::<Vec<_>>();
+    if status.lines().count() > 5 {
+        details.push("- ...".to_string());
+    }
+
+    let mut message = format!(
+        "プロジェクトルートに未コミット変更があるため、マージを開始できません。先に commit / stash / cleanup を行ってください。\n\n現在の変更:\n{}",
+        details.join("\n")
+    );
+
+    if gitignore_has_legacy_worktree_entry(project_path) {
+        message.push_str(
+            "\n\n`.gitignore` に旧バージョンが追加した `.vicara-worktrees/` 差分が残っている可能性があります。今回のバージョンでは `.git/info/exclude` を使うため、app 起因の差分だけであれば cleanup 後に再試行してください。",
+        );
+    }
+
+    message
+}
+
+fn ensure_merge_preflight_clean(project_path: &Path) -> Result<(), String> {
+    let status = git::run_git(project_path, &["status", "--porcelain"])?;
+    if status.trim().is_empty() {
+        return Ok(());
+    }
+
+    Err(build_dirty_project_root_message(project_path, &status))
 }
 
 fn link_node_modules(project_path: &Path, wt_path: &Path) -> Result<(), String> {
@@ -265,6 +395,7 @@ pub async fn create_worktree(
 ) -> Result<WorktreeInfo, String> {
     let project = Path::new(&project_path);
     git::ensure_git_repo(project)?;
+    migrate_legacy_worktree_gitignore(project)?;
 
     {
         let worktrees = state
@@ -307,7 +438,6 @@ pub async fn create_worktree(
         .ok_or("ワークツリーの親ディレクトリが不正です")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("ディレクトリ作成エラー: {}", e))?;
 
-    ensure_gitignore_entry(project)?;
     git::run_git(
         project,
         &[
@@ -405,6 +535,7 @@ pub async fn merge_worktree(
     task_id: String,
 ) -> Result<MergeResult, String> {
     let project = Path::new(&project_path);
+    migrate_legacy_worktree_gitignore(project)?;
     let wt_path = worktree_path(&project_path, &task_id);
     let br_name = branch_name(&task_id);
     let worktree_registered = if wt_path.exists() {
@@ -459,6 +590,20 @@ pub async fn merge_worktree(
             "プロジェクトルートが main ブランチ上にありません（現在: {}）。マージ前に main へ切り替えてください。",
             current_branch
         ));
+    }
+
+    if let Err(message) = ensure_merge_preflight_clean(project) {
+        {
+            let mut worktrees = state
+                .worktrees
+                .lock()
+                .map_err(|e| format!("State lock error: {}", e))?;
+            if let Some(info) = worktrees.get_mut(&task_id) {
+                info.status = WorktreeStatus::Active;
+            }
+        }
+
+        return Ok(MergeResult::Error { message });
     }
 
     let (success, stdout, stderr) = git::run_git_raw(
@@ -814,11 +959,16 @@ mod tests {
         let task_id = "test-001";
         let wt_path = worktree_path(&project_path, task_id);
         let br_name = branch_name(task_id);
+        let exclude_path = git::resolve_git_internal_path(repo.path(), "info/exclude").unwrap();
 
-        ensure_gitignore_entry(repo.path()).expect("gitignore failed");
+        ensure_local_exclude_entry(repo.path()).expect("exclude failed");
 
-        let gitignore = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
-        assert!(gitignore.contains(".vicara-worktrees/"));
+        let exclude = fs::read_to_string(&exclude_path).unwrap();
+        assert!(exclude.contains(".vicara-worktrees/"));
+        assert!(
+            !repo.path().join(".gitignore").exists(),
+            "tracked .gitignore should not be touched"
+        );
 
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
         git::run_git(
@@ -1090,18 +1240,172 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_gitignore_idempotent() {
+    fn test_ensure_local_exclude_idempotent() {
         let repo = setup_test_repo();
+        let exclude_path = git::resolve_git_internal_path(repo.path(), "info/exclude").unwrap();
 
-        ensure_gitignore_entry(repo.path()).unwrap();
-        ensure_gitignore_entry(repo.path()).unwrap();
+        ensure_local_exclude_entry(repo.path()).unwrap();
+        ensure_local_exclude_entry(repo.path()).unwrap();
 
-        let content = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
+        let content = fs::read_to_string(exclude_path).unwrap();
         let count = content
             .lines()
             .filter(|line| line.trim() == ".vicara-worktrees/")
             .count();
         assert_eq!(count, 1, "Should appear exactly once, got: {}", count);
+    }
+
+    #[test]
+    fn test_migrate_legacy_gitignore_entry_restores_tracked_file() {
+        let repo = setup_test_repo();
+        let gitignore_path = repo.path().join(".gitignore");
+        let exclude_path = git::resolve_git_internal_path(repo.path(), "info/exclude").unwrap();
+
+        fs::write(&gitignore_path, "node_modules/\n").unwrap();
+        git::run_git(repo.path(), &["add", ".gitignore"]).unwrap();
+        git::run_git(repo.path(), &["commit", "-m", "Add gitignore"]).unwrap();
+
+        fs::write(&gitignore_path, "node_modules/\n.vicara-worktrees/\n").unwrap();
+
+        assert!(migrate_legacy_worktree_gitignore(repo.path()).unwrap());
+        assert_eq!(
+            fs::read_to_string(&gitignore_path).unwrap(),
+            "node_modules/\n"
+        );
+        assert!(fs::read_to_string(exclude_path)
+            .unwrap()
+            .contains(".vicara-worktrees/"));
+        assert_eq!(
+            git::run_git(repo.path(), &["status", "--porcelain"]).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_migrate_legacy_gitignore_entry_removes_untracked_app_file() {
+        let repo = setup_test_repo();
+        let gitignore_path = repo.path().join(".gitignore");
+        let exclude_path = git::resolve_git_internal_path(repo.path(), "info/exclude").unwrap();
+
+        fs::write(&gitignore_path, ".vicara-worktrees/\n").unwrap();
+
+        assert!(migrate_legacy_worktree_gitignore(repo.path()).unwrap());
+        assert!(
+            !gitignore_path.exists(),
+            "legacy app-created .gitignore should be removed"
+        );
+        assert!(fs::read_to_string(exclude_path)
+            .unwrap()
+            .contains(".vicara-worktrees/"));
+        assert_eq!(
+            git::run_git(repo.path(), &["status", "--porcelain"]).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_migrate_legacy_gitignore_entry_keeps_other_local_changes() {
+        let repo = setup_test_repo();
+        let gitignore_path = repo.path().join(".gitignore");
+
+        fs::write(&gitignore_path, "node_modules/\n").unwrap();
+        git::run_git(repo.path(), &["add", ".gitignore"]).unwrap();
+        git::run_git(repo.path(), &["commit", "-m", "Add gitignore"]).unwrap();
+
+        fs::write(
+            &gitignore_path,
+            "node_modules/\ncustom/\n.vicara-worktrees/\n",
+        )
+        .unwrap();
+
+        assert!(!migrate_legacy_worktree_gitignore(repo.path()).unwrap());
+        assert_eq!(
+            fs::read_to_string(&gitignore_path).unwrap(),
+            "node_modules/\ncustom/\n.vicara-worktrees/\n"
+        );
+    }
+
+    #[test]
+    fn test_merge_preflight_blocks_dirty_project_root() {
+        let repo = setup_test_repo();
+
+        fs::write(repo.path().join(".gitignore"), "node_modules/\n").unwrap();
+        git::run_git(repo.path(), &["add", ".gitignore"]).unwrap();
+        git::run_git(repo.path(), &["commit", "-m", "Add gitignore"]).unwrap();
+
+        fs::write(
+            repo.path().join(".gitignore"),
+            "node_modules/\ncustom/\n.vicara-worktrees/\n",
+        )
+        .unwrap();
+
+        assert!(!migrate_legacy_worktree_gitignore(repo.path()).unwrap());
+
+        let error = ensure_merge_preflight_clean(repo.path()).unwrap_err();
+        assert!(error.contains("commit / stash / cleanup"));
+        assert!(error.contains(".gitignore"));
+        assert!(error.contains(".vicara-worktrees/"));
+    }
+
+    #[test]
+    fn test_merge_regression_when_task_branch_changes_gitignore() {
+        let repo = setup_test_repo();
+        let project_path = repo.path().to_string_lossy().to_string();
+        let task_id = "gitignore-merge";
+        let wt_path = worktree_path(&project_path, task_id);
+        let br_name = branch_name(task_id);
+
+        ensure_local_exclude_entry(repo.path()).unwrap();
+        assert_eq!(
+            git::run_git(repo.path(), &["status", "--porcelain"]).unwrap(),
+            ""
+        );
+
+        fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
+        git::run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                &wt_path.to_string_lossy(),
+                "-b",
+                &br_name,
+                "main",
+            ],
+        )
+        .unwrap();
+
+        fs::write(wt_path.join(".gitignore"), "dist/\n").unwrap();
+        git::run_git(&wt_path, &["add", ".gitignore"]).unwrap();
+        git::run_git(&wt_path, &["commit", "-m", "Add worktree gitignore"]).unwrap();
+
+        ensure_merge_preflight_clean(repo.path()).unwrap();
+
+        let (success, _, stderr) = git::run_git_raw(
+            repo.path(),
+            &[
+                "merge",
+                "--no-ff",
+                "-m",
+                &format!("[vicara] Merge task-{}", task_id),
+                &br_name,
+            ],
+        )
+        .unwrap();
+
+        assert!(success, "Merge failed: {}", stderr);
+        let merged_gitignore = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
+        assert_eq!(
+            normalize_lines_for_compare(&merged_gitignore),
+            vec!["dist/".to_string()]
+        );
+
+        let _ = git::run_git(
+            repo.path(),
+            &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
+        );
+        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
+        let _ = git::run_git(repo.path(), &["branch", "-d", &br_name]);
     }
 
     #[test]

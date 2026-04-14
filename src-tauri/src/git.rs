@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,15 +25,19 @@ pub fn check_git_available() -> Result<(), String> {
     Ok(())
 }
 
-pub fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+pub fn run_git_output(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    Command::new("git")
         .args(args)
         .current_dir(cwd)
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
         .env("GIT_CONFIG_VALUE_0", "false")
         .output()
-        .map_err(|e| format!("Gitコマンドの実行に失敗しました: {}", e))?;
+        .map_err(|e| format!("Gitコマンドの実行に失敗しました: {}", e))
+}
+
+pub fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let output = run_git_output(cwd, args)?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -48,20 +52,42 @@ pub fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 pub fn run_git_raw(cwd: &Path, args: &[&str]) -> Result<(bool, String, String), String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
-        .env("GIT_CONFIG_VALUE_0", "false")
-        .output()
-        .map_err(|e| format!("Gitコマンドの実行に失敗しました: {}", e))?;
+    let output = run_git_output(cwd, args)?;
 
     Ok((
         output.status.success(),
         String::from_utf8_lossy(&output.stdout).trim().to_string(),
         String::from_utf8_lossy(&output.stderr).trim().to_string(),
     ))
+}
+
+pub fn resolve_git_internal_path(
+    project_path: &Path,
+    relative_path: &str,
+) -> Result<PathBuf, String> {
+    let git_path = run_git(project_path, &["rev-parse", "--git-path", relative_path])?;
+    let resolved = PathBuf::from(&git_path);
+    if resolved.is_absolute() {
+        Ok(resolved)
+    } else {
+        Ok(project_path.join(resolved))
+    }
+}
+
+pub fn read_head_file(project_path: &Path, path: &str) -> Result<Option<String>, String> {
+    let object = format!("HEAD:{}", path);
+    let (exists, _, _) = run_git_raw(project_path, &["cat-file", "-e", &object])?;
+    if !exists {
+        return Ok(None);
+    }
+
+    let output = run_git_output(project_path, &["show", &object])?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("Git show が失敗しました: {}", stderr));
+    }
+
+    Ok(Some(String::from_utf8_lossy(&output.stdout).to_string()))
 }
 
 fn has_git_dir(project_path: &Path) -> bool {
@@ -265,7 +291,11 @@ pub fn list_changed_files_in_worktree(wt_path: &Path) -> Result<Vec<String>, Str
     let mut files = BTreeSet::new();
 
     let mut extend_files = |output: String| {
-        for file in output.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        for file in output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
             files.insert(file.to_string());
         }
     };
@@ -273,7 +303,10 @@ pub fn list_changed_files_in_worktree(wt_path: &Path) -> Result<Vec<String>, Str
     extend_files(run_git(wt_path, &["diff", "--name-only", "main...HEAD"])?);
     extend_files(run_git(wt_path, &["diff", "--name-only"])?);
     extend_files(run_git(wt_path, &["diff", "--name-only", "--cached"])?);
-    extend_files(run_git(wt_path, &["ls-files", "--others", "--exclude-standard"])?);
+    extend_files(run_git(
+        wt_path,
+        &["ls-files", "--others", "--exclude-standard"],
+    )?);
 
     Ok(files.into_iter().collect())
 }

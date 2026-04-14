@@ -13,15 +13,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # NOTE: macOS/Linux builds are temporarily disabled due to PTY-related compilation issues.
-          # To re-enable, add the following entries and fix `portable-pty` Sync constraints in claude_runner.rs:
-          #   - platform: 'macos-latest'
-          #     args: '--target x86_64-apple-darwin'
-          #   - platform: 'macos-latest'
-          #     args: '--target aarch64-apple-darwin'
-          #   - platform: 'ubuntu-22.04'
-          #     args: ''
+          # Keep the full desktop matrix enabled so draft releases validate Windows, Linux,
+          # and both macOS targets before publishing assets.
+          - platform: 'macos-latest'
+            rust-target: 'x86_64-apple-darwin'
+            args: '--target x86_64-apple-darwin'
+          - platform: 'macos-latest'
+            rust-target: 'aarch64-apple-darwin'
+            args: '--target aarch64-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            rust-target: ''
+            args: ''
           - platform: 'windows-latest'
+            rust-target: ''
             args: ''
     runs-on: ${{ matrix.platform }}
     steps:
@@ -34,6 +38,21 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Install frontend dependencies
         run: npm ci
@@ -64,4 +83,3 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
-

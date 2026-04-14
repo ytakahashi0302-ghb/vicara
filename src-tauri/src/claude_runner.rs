@@ -19,11 +19,14 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Unix: portable-pty の PtyChild + Master/Slave を保持
 ///
 /// trait object で統一し、kill / wait のみ公開する。
+/// セッション全体は Mutex 配下で単独所有されるため、killer 自体には Sync を要求しない。
+type BoxedProcessKiller = Box<dyn ProcessKiller + Send>;
+
 struct AgentSession {
     info: ActiveAgentSession,
     temp_file_path: PathBuf,
     /// プロセス kill 用ハンドル
-    killer: Box<dyn ProcessKiller + Send + Sync>,
+    killer: BoxedProcessKiller,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -77,7 +80,7 @@ use portable_pty::{
 
 #[cfg(not(target_os = "windows"))]
 struct PtyChildKiller {
-    child: Box<dyn PtyChild + Send + Sync>,
+    child: Box<dyn PtyChild + Send>,
     _master: Box<dyn MasterPty + Send>,
     _slave: Box<dyn SlavePty + Send>,
 }
@@ -459,7 +462,11 @@ fn promote_session_to_running(
 }
 
 fn is_meta_output_file(path: &str) -> bool {
-    let normalized = path.trim().replace('\\', "/").trim_start_matches("./").to_ascii_lowercase();
+    let normalized = path
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_ascii_lowercase();
 
     matches!(
         normalized.as_str(),
@@ -1254,9 +1261,7 @@ pub async fn kill_claude_process(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_meta_output_file, prepare_cli_invocation, should_suppress_duplicate_output_at,
-    };
+    use super::{is_meta_output_file, prepare_cli_invocation, should_suppress_duplicate_output_at};
     use crate::cli_runner::{claude::ClaudeRunner, codex::CodexRunner, CliRunner};
     use std::path::Path;
     use std::time::{Duration, Instant};

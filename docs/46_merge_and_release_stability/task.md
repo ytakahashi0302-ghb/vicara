@@ -39,25 +39,25 @@ InspectionDeck から実施した実開発検証において、`Sample project` 
 
 ### Story 1: worktree マージの安定化
 
-- [ ] `create_worktree` 時の `.vicara-worktrees/` 管理先を `.gitignore` から `.git/info/exclude` に移す
-- [ ] 既存 repo で app が追記した `.gitignore` 差分を安全に移行・掃除する条件を定義し実装する
-- [ ] `merge_worktree` 実行前に project root の dirty 状態を検知し、競合ではない失敗を事前に防ぐ
-- [ ] `.gitignore` が変更される task branch を merge するケースの回帰テストを追加する
-- [ ] 既存挙動を壊さないことを確認するため、worktree 作成・削除・マージ成功・競合系の既存テスト観点を補強する
+- [x] `create_worktree` 時の `.vicara-worktrees/` 管理先を `.gitignore` から `.git/info/exclude` に移す
+- [x] 既存 repo で app が追記した `.gitignore` 差分を安全に移行・掃除する条件を定義し実装する
+- [x] `merge_worktree` 実行前に project root の dirty 状態を検知し、競合ではない失敗を事前に防ぐ
+- [x] `.gitignore` が変更される task branch を merge するケースの回帰テストを追加する
+- [x] 既存挙動を壊さないことを確認するため、worktree 作成・削除・マージ成功・競合系の既存テスト観点を補強する
 
 ### Story 2: Release ワークフローの macOS / Linux 再有効化
 
-- [ ] `AgentSession.killer` の `Sync` 要件が本当に必要かを再確認し、不要であれば trait object 制約を整理する
-- [ ] `PtyChildKiller` が `portable-pty` の `MasterPty` / `SlavePty` 非 `Sync` 制約に引っかからない構造へ修正する
-- [ ] Windows 実装への影響を避けつつ、Unix 実装の待機・kill・cleanup パスを再確認する
-- [ ] `.github/workflows/release.yml` の macOS / Linux matrix を再有効化する
-- [ ] ワークフロー内コメントを、再有効化後の運用メモへ更新する
-- [ ] Ubuntu 依存パッケージ、macOS target 指定、Windows 既存挙動が成立することを確認する
+- [x] `AgentSession.killer` の `Sync` 要件が本当に必要かを再確認し、不要であれば trait object 制約を整理する
+- [x] `PtyChildKiller` が `portable-pty` の `MasterPty` / `SlavePty` 非 `Sync` 制約に引っかからない構造へ修正する
+- [x] Windows 実装への影響を避けつつ、Unix 実装の待機・kill・cleanup パスを再確認する
+- [x] `.github/workflows/release.yml` の macOS / Linux matrix を再有効化する
+- [x] ワークフロー内コメントを、再有効化後の運用メモへ更新する
+- [x] Ubuntu 依存パッケージ、macOS target 指定、Windows 既存挙動が成立することを確認する
 
 ## 完了条件
 
-- [ ] `.gitignore` を触る task branch をマージしても、app 起因のローカル変更でマージが止まらない
-- [ ] project root に未コミット変更がある場合、マージ前に理由が明確なエラーが返る
-- [ ] macOS / Linux を含む Release ワークフローが再び定義されている
+- [x] `.gitignore` を触る task branch をマージしても、app 起因のローカル変更でマージが止まらない
+- [x] project root に未コミット変更がある場合、マージ前に理由が明確なエラーが返る
+- [x] macOS / Linux を含む Release ワークフローが再び定義されている
 - [ ] `claude_runner.rs` の Unix ビルドが `portable-pty` の `Sync` 制約で失敗しない
-- [ ] 必要な自動テストと手動確認手順が文書化されている
+- [x] 必要な自動テストと手動確認手順が文書化されている
