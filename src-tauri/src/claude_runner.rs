@@ -1,5 +1,5 @@
 use crate::{
-    cli_detection,
+    agent_retro, cli_detection,
     cli_runner::{self, CliRunner, CliType},
     db, git, llm_observability, worktree,
 };
@@ -25,6 +25,9 @@ type BoxedProcessKiller = Box<dyn ProcessKiller + Send>;
 struct AgentSession {
     info: ActiveAgentSession,
     temp_file_path: PathBuf,
+    response_capture_path: Option<PathBuf>,
+    usage_context: AgentUsageContext,
+    retro_capture: Arc<Mutex<agent_retro::AgentRetroCapture>>,
     /// プロセス kill 用ハンドル
     killer: BoxedProcessKiller,
 }
@@ -210,14 +213,21 @@ fn build_task_prompt(
     )
 }
 
-fn create_prompt_file(task_id: &str, prompt: &str, cwd: &Path) -> Result<PathBuf, String> {
+fn create_agent_temp_file_path(
+    task_id: &str,
+    cwd: &Path,
+    prefix: &str,
+    extension: &str,
+) -> Result<PathBuf, String> {
     let timestamp = current_timestamp_millis()?;
     let prompt_dir = cwd.join(".vicara-agent");
 
     let file_name = format!(
-        "vicara-agent-{}-{}.md",
+        "vicara-agent-{}-{}-{}.{}",
+        prefix,
         sanitize_for_filename(task_id),
-        timestamp
+        timestamp,
+        extension
     );
     fs::create_dir_all(&prompt_dir).map_err(|e| {
         format!(
@@ -226,7 +236,11 @@ fn create_prompt_file(task_id: &str, prompt: &str, cwd: &Path) -> Result<PathBuf
             e
         )
     })?;
-    let path = prompt_dir.join(file_name);
+    Ok(prompt_dir.join(file_name))
+}
+
+fn create_prompt_file(task_id: &str, prompt: &str, cwd: &Path) -> Result<PathBuf, String> {
+    let path = create_agent_temp_file_path(task_id, cwd, "prompt", "md")?;
 
     fs::write(&path, prompt).map_err(|e| {
         format!(
@@ -250,23 +264,43 @@ struct PreparedCliInvocation {
     command_path: PathBuf,
     args: Vec<String>,
     stdin_payload: Option<String>,
+    response_capture_path: Option<PathBuf>,
 }
 
 fn prepare_cli_invocation(
     runner: &dyn CliRunner,
     cli_command_path: &Path,
+    task_id: &str,
     prompt: &str,
     model: &str,
     cwd: &str,
 ) -> Result<PreparedCliInvocation, String> {
-    let base_args = runner.build_args(prompt, model, cwd);
+    let mut base_args = runner.build_args(prompt, model, cwd);
+    let response_capture_path = if runner.prefers_response_capture_file() {
+        let path = create_agent_temp_file_path(task_id, Path::new(cwd), "response", "txt")?;
+        runner.prepare_response_capture(&mut base_args, &path)?;
+        Some(path)
+    } else {
+        None
+    };
     let (command_path, args) = runner.prepare_invocation(cli_command_path, base_args)?;
 
     Ok(PreparedCliInvocation {
         command_path,
         args,
         stdin_payload: runner.stdin_payload(prompt),
+        response_capture_path,
     })
+}
+
+fn read_response_capture_file(path: &Path) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    let normalized = contents.replace("\r\n", "\n").trim().to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
 }
 
 fn spawn_stdin_payload_writer<W>(mut writer: W, payload: String, cli_name: String, task_id: String)
@@ -396,6 +430,18 @@ fn normalize_output_chunk_for_dedup(output: &str) -> Option<String> {
     } else {
         Some(normalized)
     }
+}
+
+fn preview_output_chunk_for_log(output: &str) -> String {
+    const MAX_CHARS: usize = 160;
+
+    let mut chars = output.chars();
+    let mut preview = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        preview.push_str("...");
+    }
+
+    preview
 }
 
 fn should_suppress_duplicate_output_at(
@@ -621,6 +667,73 @@ async fn record_claude_cli_usage_event(
     }
 }
 
+async fn persist_agent_retro_run_for_session(
+    app_handle: &AppHandle,
+    session_info: &ActiveAgentSession,
+    usage_context: &AgentUsageContext,
+    retro_capture: &Arc<Mutex<agent_retro::AgentRetroCapture>>,
+    response_capture_path: Option<&Path>,
+    success: bool,
+    reason: String,
+) {
+    let final_answer_override = response_capture_path.and_then(read_response_capture_file);
+    let finalized = match retro_capture.lock() {
+        Ok(mut guard) => guard.finalize(final_answer_override),
+        Err(error) => {
+            log::warn!(
+                "Failed to lock retro capture for session {}: {}",
+                session_info.task_id,
+                error
+            );
+            return;
+        }
+    };
+
+    let changed_files = if let Some(task_id) = usage_context.db_task_id.as_deref() {
+        match list_substantive_worktree_changes(app_handle, task_id).await {
+            Ok(Some(files)) => files,
+            Ok(None) => Vec::new(),
+            Err(error) => {
+                log::warn!(
+                    "Failed to collect substantive worktree changes for retro log task {}: {}",
+                    task_id,
+                    error
+                );
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    if let Err(error) = agent_retro::persist_agent_retro_run(
+        app_handle,
+        agent_retro::AgentRetroPersistInput {
+            project_id: usage_context.project_id.clone(),
+            task_id: usage_context.db_task_id.clone(),
+            sprint_id: usage_context.sprint_id.clone(),
+            source_kind: usage_context.source_kind.clone(),
+            role_name: session_info.role_name.clone(),
+            cli_type: session_info.cli_type.clone(),
+            model: session_info.model.clone(),
+            started_at: session_info.started_at,
+            completed_at: current_timestamp_millis().unwrap_or(session_info.started_at),
+            success,
+            error_message: (!success).then_some(reason),
+            changed_files,
+            finalized,
+        },
+    )
+    .await
+    {
+        log::warn!(
+            "Failed to persist retro log for session {}: {}",
+            session_info.task_id,
+            error
+        );
+    }
+}
+
 async fn execute_prompt_request(
     app_handle: AppHandle,
     runner: &dyn CliRunner,
@@ -684,6 +797,30 @@ async fn execute_prompt_request(
                 AgentSessionEntry::Running(mut session) => {
                     session.killer.kill();
                     cleanup_temp_file(&session.temp_file_path);
+                    if let Some(response_capture_path) = session.response_capture_path.as_ref() {
+                        persist_agent_retro_run_for_session(
+                            &app_timeout,
+                            &session.info,
+                            &session.usage_context,
+                            &session.retro_capture,
+                            Some(response_capture_path),
+                            false,
+                            "Timeout reached (180s). Process forcefully killed.".to_string(),
+                        )
+                        .await;
+                        cleanup_temp_file(response_capture_path);
+                    } else {
+                        persist_agent_retro_run_for_session(
+                            &app_timeout,
+                            &session.info,
+                            &session.usage_context,
+                            &session.retro_capture,
+                            None,
+                            false,
+                            "Timeout reached (180s). Process forcefully killed.".to_string(),
+                        )
+                        .await;
+                    }
                 }
                 AgentSessionEntry::Starting(_) => {}
             }
@@ -773,6 +910,7 @@ fn spawn_agent_process(
     let prepared = prepare_cli_invocation(
         runner,
         cli_command_path,
+        &session_info.task_id,
         &cli_prompt,
         &session_info.model,
         &cwd,
@@ -819,6 +957,9 @@ fn spawn_agent_process(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let recent_output = Arc::new(Mutex::new(None::<RecentOutputChunk>));
+    let retro_capture = Arc::new(Mutex::new(agent_retro::AgentRetroCapture::new(
+        runner.cli_type(),
+    )));
 
     let mut running_info = session_info.clone();
     running_info.status = "Running".to_string();
@@ -826,6 +967,9 @@ fn spawn_agent_process(
     let session = AgentSession {
         info: running_info.clone(),
         temp_file_path: prompt_file_path,
+        response_capture_path: prepared.response_capture_path.clone(),
+        usage_context: usage_context.clone(),
+        retro_capture: retro_capture.clone(),
         killer: Box::new(StdChildKiller { child }),
     };
     promote_session_to_running(app_handle, &sessions_arc, &session_info.task_id, session)?;
@@ -833,6 +977,7 @@ fn spawn_agent_process(
     let app_out = app_handle.clone();
     let tid_out = session_info.task_id.clone();
     let recent_output_out = recent_output.clone();
+    let retro_capture_out = retro_capture.clone();
     if let Some(mut reader) = stdout {
         std::thread::spawn(move || {
             let mut buf = [0u8; 1024];
@@ -844,9 +989,29 @@ fn spawn_agent_process(
                     }
                     Ok(n) => {
                         let output = String::from_utf8_lossy(&buf[..n]).to_string();
+                        if let Ok(mut capture) = retro_capture_out.lock() {
+                            capture.ingest_chunk(&output);
+                        }
+                        let preview = preview_output_chunk_for_log(&output);
+                        log::debug!(
+                            "[STREAM][stdout] task={} received {} bytes preview={:?}",
+                            tid_out,
+                            n,
+                            preview
+                        );
                         if should_suppress_duplicate_output(&recent_output_out, &output) {
+                            log::debug!(
+                                "[STREAM][stdout] task={} suppressed duplicate chunk preview={:?}",
+                                tid_out,
+                                preview
+                            );
                             continue;
                         }
+                        log::debug!(
+                            "[STREAM][stdout] task={} emitting chunk preview={:?}",
+                            tid_out,
+                            preview
+                        );
                         let _ = app_out.emit(
                             "claude_cli_output",
                             ClaudeOutputPayload {
@@ -867,6 +1032,7 @@ fn spawn_agent_process(
     let app_err = app_handle.clone();
     let tid_err = session_info.task_id.clone();
     let recent_output_err = recent_output;
+    let retro_capture_err = retro_capture;
     if let Some(mut reader) = stderr {
         std::thread::spawn(move || {
             let mut buf = [0u8; 1024];
@@ -875,9 +1041,29 @@ fn spawn_agent_process(
                     Ok(0) => break,
                     Ok(n) => {
                         let output = String::from_utf8_lossy(&buf[..n]).to_string();
+                        if let Ok(mut capture) = retro_capture_err.lock() {
+                            capture.ingest_chunk(&output);
+                        }
+                        let preview = preview_output_chunk_for_log(&output);
+                        log::debug!(
+                            "[STREAM][stderr] task={} received {} bytes preview={:?}",
+                            tid_err,
+                            n,
+                            preview
+                        );
                         if should_suppress_duplicate_output(&recent_output_err, &output) {
+                            log::debug!(
+                                "[STREAM][stderr] task={} suppressed duplicate chunk preview={:?}",
+                                tid_err,
+                                preview
+                            );
                             continue;
                         }
+                        log::debug!(
+                            "[STREAM][stderr] task={} emitting chunk preview={:?}",
+                            tid_err,
+                            preview
+                        );
                         let _ = app_err.emit(
                             "claude_cli_output",
                             ClaudeOutputPayload {
@@ -905,6 +1091,36 @@ fn spawn_agent_process(
         {
             let success = session.killer.wait_success();
             cleanup_temp_file(&session.temp_file_path);
+            if let Some(response_capture_path) = session.response_capture_path.as_ref() {
+                tauri::async_runtime::block_on(persist_agent_retro_run_for_session(
+                    &app_wait,
+                    &session.info,
+                    &session.usage_context,
+                    &session.retro_capture,
+                    Some(response_capture_path),
+                    success,
+                    if success {
+                        "Completed successfully".to_string()
+                    } else {
+                        "Process exited with error".to_string()
+                    },
+                ));
+                cleanup_temp_file(response_capture_path);
+            } else {
+                tauri::async_runtime::block_on(persist_agent_retro_run_for_session(
+                    &app_wait,
+                    &session.info,
+                    &session.usage_context,
+                    &session.retro_capture,
+                    None,
+                    success,
+                    if success {
+                        "Completed successfully".to_string()
+                    } else {
+                        "Process exited with error".to_string()
+                    },
+                ));
+            }
             let reason = if success {
                 "Completed successfully".to_string()
             } else {
@@ -957,6 +1173,7 @@ fn spawn_agent_process(
     let prepared = prepare_cli_invocation(
         runner,
         cli_command_path,
+        &session_info.task_id,
         &cli_prompt,
         &session_info.model,
         &cwd,
@@ -995,6 +1212,9 @@ fn spawn_agent_process(
     }
 
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let retro_capture = Arc::new(Mutex::new(agent_retro::AgentRetroCapture::new(
+        runner.cli_type(),
+    )));
 
     let mut running_info = session_info.clone();
     running_info.status = "Running".to_string();
@@ -1002,6 +1222,9 @@ fn spawn_agent_process(
     let session = AgentSession {
         info: running_info.clone(),
         temp_file_path: prompt_file_path,
+        response_capture_path: prepared.response_capture_path.clone(),
+        usage_context: usage_context.clone(),
+        retro_capture: retro_capture.clone(),
         killer: Box::new(PtyChildKiller {
             child,
             _master: pair.master,
@@ -1015,6 +1238,7 @@ fn spawn_agent_process(
     let tid_clone = session_info.task_id.clone();
     let wait_session_info = session_info.clone();
     let wait_usage_context = usage_context.clone();
+    let retro_capture_clone = retro_capture.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 1024];
@@ -1026,6 +1250,9 @@ fn spawn_agent_process(
                 }
                 Ok(n) => {
                     let output = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let Ok(mut capture) = retro_capture_clone.lock() {
+                        capture.ingest_chunk(&output);
+                    }
                     let _ = app_clone.emit(
                         "claude_cli_output",
                         ClaudeOutputPayload {
@@ -1048,6 +1275,36 @@ fn spawn_agent_process(
         {
             let success = session.killer.wait_success();
             cleanup_temp_file(&session.temp_file_path);
+            if let Some(response_capture_path) = session.response_capture_path.as_ref() {
+                tauri::async_runtime::block_on(persist_agent_retro_run_for_session(
+                    &app_clone,
+                    &session.info,
+                    &session.usage_context,
+                    &session.retro_capture,
+                    Some(response_capture_path),
+                    success,
+                    if success {
+                        "Completed successfully".to_string()
+                    } else {
+                        "Process exited with error".to_string()
+                    },
+                ));
+                cleanup_temp_file(response_capture_path);
+            } else {
+                tauri::async_runtime::block_on(persist_agent_retro_run_for_session(
+                    &app_clone,
+                    &session.info,
+                    &session.usage_context,
+                    &session.retro_capture,
+                    None,
+                    success,
+                    if success {
+                        "Completed successfully".to_string()
+                    } else {
+                        "Process exited with error".to_string()
+                    },
+                ));
+            }
             let reason = if success {
                 "Completed successfully".to_string()
             } else {
@@ -1240,6 +1497,30 @@ pub async fn kill_claude_process(
         AgentSessionEntry::Running(mut session) => {
             session.killer.kill();
             cleanup_temp_file(&session.temp_file_path);
+            if let Some(response_capture_path) = session.response_capture_path.as_ref() {
+                persist_agent_retro_run_for_session(
+                    &app_handle,
+                    &session.info,
+                    &session.usage_context,
+                    &session.retro_capture,
+                    Some(response_capture_path),
+                    false,
+                    "Manually killed by user.".to_string(),
+                )
+                .await;
+                cleanup_temp_file(response_capture_path);
+            } else {
+                persist_agent_retro_run_for_session(
+                    &app_handle,
+                    &session.info,
+                    &session.usage_context,
+                    &session.retro_capture,
+                    None,
+                    false,
+                    "Manually killed by user.".to_string(),
+                )
+                .await;
+            }
         }
         AgentSessionEntry::Starting(_) => {}
     }
@@ -1272,6 +1553,7 @@ mod tests {
         let prepared = prepare_cli_invocation(
             &runner,
             Path::new("claude"),
+            "task-1",
             "sample prompt",
             "claude-model",
             "C:/repo",
@@ -1280,6 +1562,7 @@ mod tests {
 
         assert_eq!(prepared.command_path, Path::new("claude"));
         assert_eq!(prepared.stdin_payload, None);
+        assert!(prepared.response_capture_path.is_none());
         assert_eq!(
             prepared.args,
             runner.build_args("sample prompt", "claude-model", "C:/repo")
@@ -1292,6 +1575,7 @@ mod tests {
         let prepared = prepare_cli_invocation(
             &runner,
             Path::new("codex"),
+            "task-2",
             "sample prompt",
             "gpt-5.3-codex-spark",
             "C:/repo",
@@ -1300,10 +1584,15 @@ mod tests {
 
         assert_eq!(prepared.command_path, Path::new("codex"));
         assert_eq!(prepared.stdin_payload.as_deref(), Some("sample prompt"));
-        assert_eq!(
-            prepared.args,
-            runner.build_args("sample prompt", "gpt-5.3-codex-spark", "C:/repo")
-        );
+        assert!(prepared
+            .response_capture_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().contains("response-task-2"))
+            .unwrap_or(false));
+        assert_eq!(prepared.args[0], "exec");
+        assert_eq!(prepared.args[1], "--output-last-message");
+        assert!(prepared.args[2].contains("response-task-2"));
+        assert_eq!(prepared.args[3], "--full-auto");
     }
 
     #[test]

@@ -55,6 +55,11 @@ interface ClaudeExitPayload {
     new_status?: string;
 }
 
+interface ClaudeStreamRenderState {
+    buffer: string;
+    hasThinking: boolean;
+}
+
 interface FrontendAgentErrorDetail {
     taskId?: string;
     taskTitle?: string;
@@ -64,6 +69,143 @@ interface FrontendAgentErrorDetail {
 }
 
 const WELCOME_MESSAGE = '\x1b[38;5;12m[vicara]\x1b[0m Dev Agent Terminal Ready.\r\n';
+
+function createClaudeStreamRenderState(): ClaudeStreamRenderState {
+    return {
+        buffer: '',
+        hasThinking: false,
+    };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function getStringValue(value: unknown): string | null {
+    return typeof value === 'string' ? value : null;
+}
+
+function renderClaudeAssistantText(messageValue: unknown, hasThinking: boolean): string {
+    if (hasThinking) {
+        return '';
+    }
+
+    const message = asRecord(messageValue);
+    const content = Array.isArray(message?.content) ? message.content : [];
+    return content
+        .map((block) => {
+            const blockRecord = asRecord(block);
+            if (blockRecord?.type !== 'text') {
+                return '';
+            }
+            return getStringValue(blockRecord.text) ?? '';
+        })
+        .join('');
+}
+
+function renderClaudeStreamJsonLine(line: string, hasThinking: boolean): {
+    output: string;
+    nextHasThinking: boolean;
+} {
+    const trimmed = line.trim();
+    if (!trimmed) {
+        return { output: '', nextHasThinking: hasThinking };
+    }
+
+    try {
+        const payload = JSON.parse(trimmed) as unknown;
+        const root = asRecord(payload);
+        if (!root) {
+            return { output: '', nextHasThinking: hasThinking };
+        }
+
+        if (root.type === 'stream_event') {
+            const event = asRecord(root.event);
+            if (!event) {
+                return { output: '', nextHasThinking: hasThinking };
+            }
+
+            if (event.type === 'content_block_delta') {
+                const delta = asRecord(event.delta);
+                if (!delta) {
+                    return { output: '', nextHasThinking: hasThinking };
+                }
+
+                if (delta.type === 'thinking_delta') {
+                    return {
+                        output: getStringValue(delta.thinking) ?? '',
+                        nextHasThinking: true,
+                    };
+                }
+
+                if (delta.type === 'text_delta' && !hasThinking) {
+                    return {
+                        output: getStringValue(delta.text) ?? '',
+                        nextHasThinking: hasThinking,
+                    };
+                }
+            }
+
+            return { output: '', nextHasThinking: hasThinking };
+        }
+
+        if (root.type === 'assistant') {
+            return {
+                output: renderClaudeAssistantText(root.message, hasThinking),
+                nextHasThinking: hasThinking,
+            };
+        }
+
+        return { output: '', nextHasThinking: hasThinking };
+    } catch {
+        return {
+            output: line.replace(/\n/g, '\r\n') + '\r\n',
+            nextHasThinking: hasThinking,
+        };
+    }
+}
+
+function consumeClaudeStreamChunk(
+    chunk: string,
+    previousState: ClaudeStreamRenderState,
+    flush = false,
+): {
+    output: string;
+    nextState: ClaudeStreamRenderState;
+} {
+    const normalizedChunk = chunk.replace(/\r\n/g, '\n');
+    const combined = previousState.buffer + normalizedChunk;
+    const lines = combined.split('\n');
+    const trailingBuffer = lines.pop() ?? '';
+    const nextBuffer = flush ? '' : trailingBuffer;
+
+    const rendered: string[] = [];
+    let nextHasThinking = previousState.hasThinking;
+
+    for (const line of lines) {
+        const result = renderClaudeStreamJsonLine(line, nextHasThinking);
+        nextHasThinking = result.nextHasThinking;
+        if (result.output) {
+            rendered.push(result.output);
+        }
+    }
+
+    if (flush && trailingBuffer) {
+        const result = renderClaudeStreamJsonLine(trailingBuffer, nextHasThinking);
+        nextHasThinking = result.nextHasThinking;
+        if (result.output) {
+            rendered.push(result.output);
+        }
+    }
+
+    return {
+        output: rendered.join(''),
+        nextState: {
+            buffer: nextBuffer,
+            hasThinking: nextHasThinking,
+        },
+    };
+}
 
 function buildSessionHeader(session: Pick<TerminalTabSession, 'roleName' | 'taskTitle' | 'model'>): string {
     return `\x1b[38;5;12m[${session.roleName}]\x1b[0m ${session.taskTitle}\r\n\x1b[38;5;8mModel: ${session.model || 'unknown'}\x1b[0m\r\n\r\n`;
@@ -209,6 +351,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
     const safeFitRef = useRef<() => void>(() => undefined);
     const activeTaskIdRef = useRef<string | null>(null);
     const sessionsRef = useRef<Record<string, TerminalTabSession>>({});
+    const claudeStreamStateRef = useRef<Record<string, ClaudeStreamRenderState>>({});
     const { updateTaskStatus } = useScrum();
     const [sessions, setSessions] = useState<Record<string, TerminalTabSession>>({});
     const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -454,6 +597,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
             };
 
             await register<ActiveClaudeSession>('claude_cli_started', (event) => {
+                claudeStreamStateRef.current[event.payload.task_id] = createClaudeStreamRenderState();
                 setSessions((prev) => {
                     const existing = prev[event.payload.task_id];
                     const created = createSessionFromActiveSession(event.payload);
@@ -476,6 +620,14 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
             });
 
             await register<ClaudeOutputPayload>('claude_cli_output', (event) => {
+                const currentState =
+                    claudeStreamStateRef.current[event.payload.task_id] ?? createClaudeStreamRenderState();
+                const rendered = consumeClaudeStreamChunk(event.payload.output, currentState);
+                claudeStreamStateRef.current[event.payload.task_id] = rendered.nextState;
+                if (!rendered.output) {
+                    return;
+                }
+
                 setSessions((prev) => {
                     const existing = prev[event.payload.task_id] ?? createPlaceholderSession(event.payload.task_id);
                     const withHeader = existing.logs
@@ -486,19 +638,24 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                         [event.payload.task_id]: {
                             ...existing,
                             status: existing.status === 'Starting' ? 'Running' : existing.status,
-                            logs: withHeader + event.payload.output,
+                            logs: withHeader + rendered.output,
                         },
                     };
                 });
 
                 if (activeTaskIdRef.current === event.payload.task_id && xtermRef.current) {
-                    xtermRef.current.write(event.payload.output);
+                    xtermRef.current.write(rendered.output);
                 }
             });
 
             await register<ClaudeExitPayload>('claude_cli_exit', async (event) => {
+                const currentState =
+                    claudeStreamStateRef.current[event.payload.task_id] ?? createClaudeStreamRenderState();
+                const flushed = consumeClaudeStreamChunk('', currentState, true);
+                delete claudeStreamStateRef.current[event.payload.task_id];
                 const exitLine = createExitLine(event.payload.success, event.payload.reason);
                 const nextStatus = mapExitStatus(event.payload.success, event.payload.reason);
+                const appendedOutput = flushed.output + exitLine;
 
                 setSessions((prev) => {
                     const existing = prev[event.payload.task_id] ?? createPlaceholderSession(event.payload.task_id);
@@ -511,13 +668,13 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                             ...existing,
                             status: nextStatus,
                             exitReason: event.payload.reason,
-                            logs: withHeader + exitLine,
+                            logs: withHeader + appendedOutput,
                         },
                     };
                 });
 
                 if (activeTaskIdRef.current === event.payload.task_id && xtermRef.current) {
-                    xtermRef.current.write(exitLine);
+                    xtermRef.current.write(appendedOutput);
                 }
 
                 if (event.payload.success) {

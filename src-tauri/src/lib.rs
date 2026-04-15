@@ -1,3 +1,4 @@
+mod agent_retro;
 mod ai;
 mod ai_tools;
 mod claude_runner;
@@ -130,6 +131,12 @@ pub fn run() {
             version: 19,
             description: "entity_sequence_numbers",
             sql: include_str!("../migrations/19_entity_sequence_numbers.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 20,
+            description: "agent_retro_logs",
+            sql: include_str!("../migrations/20_agent_retro_logs.sql"),
             kind: MigrationKind::Up,
         },
     ];

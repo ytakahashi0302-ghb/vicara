@@ -272,6 +272,72 @@ pub struct TeamConfigurationInput {
     pub roles: Vec<TeamRoleInput>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
+pub struct AgentRetroRun {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub sprint_id: Option<String>,
+    pub source_kind: String,
+    pub role_name: String,
+    pub cli_type: String,
+    pub model: String,
+    pub started_at: i64,
+    pub completed_at: i64,
+    pub duration_ms: i64,
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub reasoning_log: Option<String>,
+    pub final_answer: Option<String>,
+    pub changed_files_json: Option<String>,
+    pub tool_event_count: i32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
+pub struct AgentRetroToolEvent {
+    pub id: String,
+    pub run_id: String,
+    pub sequence_number: i32,
+    pub tool_name: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AgentRetroRunInsertInput {
+    pub id: String,
+    pub project_id: String,
+    pub task_id: Option<String>,
+    pub sprint_id: Option<String>,
+    pub source_kind: String,
+    pub role_name: String,
+    pub cli_type: String,
+    pub model: String,
+    pub started_at: i64,
+    pub completed_at: i64,
+    pub duration_ms: i64,
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub reasoning_log: Option<String>,
+    pub final_answer: Option<String>,
+    pub changed_files_json: Option<String>,
+    pub tool_event_count: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AgentRetroToolEventInsertInput {
+    pub id: String,
+    pub run_id: String,
+    pub sequence_number: i32,
+    pub tool_name: String,
+    pub status: String,
+    pub summary: Option<String>,
+}
+
 #[derive(Clone, Copy)]
 struct DefaultTeamRoleSeed {
     id: &'static str,
@@ -563,6 +629,84 @@ pub async fn get_max_concurrent_agents_value(app: &AppHandle) -> Result<i32, Str
     let query = "SELECT max_concurrent_agents FROM team_settings WHERE id = 1 LIMIT 1";
     let mut settings = select_query::<TeamSettings>(app, query, vec![]).await?;
     Ok(settings.pop().map(|s| s.max_concurrent_agents).unwrap_or(5))
+}
+
+pub async fn insert_agent_retro_run(
+    app: &AppHandle,
+    input: AgentRetroRunInsertInput,
+) -> Result<(), String> {
+    let query = r#"
+        INSERT INTO agent_retro_runs (
+            id,
+            project_id,
+            task_id,
+            sprint_id,
+            source_kind,
+            role_name,
+            cli_type,
+            model,
+            started_at,
+            completed_at,
+            duration_ms,
+            success,
+            error_message,
+            reasoning_log,
+            final_answer,
+            changed_files_json,
+            tool_event_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    "#;
+
+    let values = vec![
+        serde_json::to_value(input.id).unwrap(),
+        serde_json::to_value(input.project_id).unwrap(),
+        serde_json::to_value(input.task_id).unwrap(),
+        serde_json::to_value(input.sprint_id).unwrap(),
+        serde_json::to_value(input.source_kind).unwrap(),
+        serde_json::to_value(input.role_name).unwrap(),
+        serde_json::to_value(input.cli_type).unwrap(),
+        serde_json::to_value(input.model).unwrap(),
+        serde_json::to_value(input.started_at).unwrap(),
+        serde_json::to_value(input.completed_at).unwrap(),
+        serde_json::to_value(input.duration_ms).unwrap(),
+        serde_json::to_value(if input.success { 1_i64 } else { 0_i64 }).unwrap(),
+        serde_json::to_value(input.error_message).unwrap(),
+        serde_json::to_value(input.reasoning_log).unwrap(),
+        serde_json::to_value(input.final_answer).unwrap(),
+        serde_json::to_value(input.changed_files_json).unwrap(),
+        serde_json::to_value(input.tool_event_count).unwrap(),
+    ];
+
+    execute_query(app, query, values).await?;
+    Ok(())
+}
+
+pub async fn insert_agent_retro_tool_event(
+    app: &AppHandle,
+    input: AgentRetroToolEventInsertInput,
+) -> Result<(), String> {
+    let query = r#"
+        INSERT INTO agent_retro_tool_events (
+            id,
+            run_id,
+            sequence_number,
+            tool_name,
+            status,
+            summary
+        ) VALUES (?, ?, ?, ?, ?, ?)
+    "#;
+
+    let values = vec![
+        serde_json::to_value(input.id).unwrap(),
+        serde_json::to_value(input.run_id).unwrap(),
+        serde_json::to_value(input.sequence_number).unwrap(),
+        serde_json::to_value(input.tool_name).unwrap(),
+        serde_json::to_value(input.status).unwrap(),
+        serde_json::to_value(input.summary).unwrap(),
+    ];
+
+    execute_query(app, query, values).await?;
+    Ok(())
 }
 
 async fn insert_default_team_role(
