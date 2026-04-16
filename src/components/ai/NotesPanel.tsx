@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import {
     ChevronDown,
     ChevronUp,
@@ -152,6 +153,17 @@ export function NotesPanel() {
         void fetchNotes();
         void fetchSessions();
     }, [currentProjectId, fetchNotes, fetchSessions]);
+
+    // POアシスタントがバックエンドからふせん/レトロを追加したときに再取得する
+    useEffect(() => {
+        const unlisten = listen('kanban-updated', () => {
+            void fetchNotes();
+            void fetchSessions();
+        });
+        return () => {
+            void unlisten.then((fn) => fn());
+        };
+    }, [fetchNotes, fetchSessions]);
 
     useEffect(() => {
         if (editingNoteId && !notes.some((note) => note.id === editingNoteId)) {

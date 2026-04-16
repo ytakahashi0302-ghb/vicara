@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { TeamChatMessage } from '../../types';
 import { useWorkspace } from '../../context/WorkspaceContext';
-import { Send, User, Loader2, X, Trash2, MessageSquare, FileText } from 'lucide-react';
+import { Send, User, Loader2, X, Trash2, MessageSquare, FileText, Info } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import toast from 'react-hot-toast';
@@ -187,8 +187,22 @@ export const PoAssistantSidebar: React.FC<PoAssistantSidebarProps> = ({ isOpen, 
                         <div className="flex items-center gap-2.5">
                             <Avatar kind="po-assistant" size="md" imageSrc={poAssistantAvatarImage} />
                             <div>
-                                <h2 className="text-sm font-bold text-gray-800 leading-tight">{PO_ASSISTANT_ROLE_NAME}</h2>
-                                <p className="text-[10px] text-gray-500 leading-tight">意思決定サポートとバックログ整理を担当</p>
+                                <div className="flex items-center gap-1">
+                                    <h2 className="text-sm font-bold text-gray-800 leading-tight">{PO_ASSISTANT_ROLE_NAME}</h2>
+                                    <div className="group relative">
+                                        <Info size={12} className="text-gray-400 hover:text-indigo-500 cursor-help transition-colors" />
+                                        <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-3 text-[11px] leading-relaxed text-gray-600 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <p className="mb-1.5 font-semibold text-gray-800">POアシスタントでできること</p>
+                                            <ul className="space-y-1 list-none">
+                                                <li>💬 バックログへのPBI・タスク追加</li>
+                                                <li>📌 気づきをふせんとしてボードに記録</li>
+                                                <li>🔄 レトロボードへのKPT提案（Keep / Problem / Try）</li>
+                                                <li>🎯 優先順位づけや要件整理の相談</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] text-gray-500 leading-tight">意思決定サポート・バックログ整理・レトロスペクティブ連携を担当</p>
                             </div>
                         </div>
                         <div className="flex items-center gap-1">
@@ -231,6 +245,17 @@ export const PoAssistantSidebar: React.FC<PoAssistantSidebarProps> = ({ isOpen, 
                         >
                             <FileText size={14} />
                             ふせん
+                            <div className="group relative ml-0.5" onClick={(e) => e.stopPropagation()}>
+                                <Info size={11} className="text-gray-400 hover:text-indigo-500 cursor-help transition-colors" />
+                                <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 w-56 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-3 text-[11px] leading-relaxed text-gray-600 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <p className="mb-1.5 font-semibold text-gray-800">ふせんとは</p>
+                                    <ul className="space-y-1 list-none">
+                                        <li>📌 会話中の気づきやメモを記録</li>
+                                        <li>🔄 レトロボードへKPTとして転記可能</li>
+                                        <li>✏️ 自分でも自由に追加・編集できます</li>
+                                    </ul>
+                                </div>
+                            </div>
                         </button>
                     </div>
 

@@ -326,6 +326,139 @@ impl Tool for CreateStoryAndTasksTool {
     }
 }
 
+// ─── AddProjectNoteTool ───
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AddProjectNoteArgs {
+    pub title: String,
+    pub content: String,
+    pub sprint_id: Option<String>,
+}
+
+pub struct AddProjectNoteTool {
+    pub app: AppHandle,
+    pub project_id: String,
+}
+
+impl Tool for AddProjectNoteTool {
+    const NAME: &'static str = "add_project_note";
+
+    type Error = CustomToolError;
+    type Args = AddProjectNoteArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "会話中に自然と出てきた気づき・懸念・メモを「ふせん」としてボードに残すツール。【重要】ユーザーが「PBIに追加して」「ストーリーを作って」「タスクを登録して」など明示的にバックログ作成を求めた場合は絶対にこのツールを使わず、`create_story_and_tasks` を使うこと。このツールはあくまで会話の副産物として生まれた気づきを記録する補助ツールである。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "ふせんのタイトル（簡潔に）" },
+                    "content": { "type": "string", "description": "ふせんの内容（Markdown形式可）" },
+                    "sprint_id": { "type": "string", "description": "関連するスプリントID（省略可）", "nullable": true }
+                },
+                "required": ["title", "content"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        crate::db::add_project_note(
+            self.app.clone(),
+            self.project_id.clone(),
+            args.sprint_id,
+            args.title.clone(),
+            args.content,
+            Some("po_assistant".to_string()),
+        )
+        .await
+        .map_err(|e| CustomToolError(e))?;
+
+        let _ = self.app.emit("kanban-updated", ());
+        Ok(format!("ふせん「{}」をボードに追加しました。", args.title))
+    }
+}
+
+// ─── SuggestRetroItemTool ───
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SuggestRetroItemArgs {
+    pub category: String,
+    pub content: String,
+}
+
+pub struct SuggestRetroItemTool {
+    pub app: AppHandle,
+    pub project_id: String,
+}
+
+impl Tool for SuggestRetroItemTool {
+    const NAME: &'static str = "suggest_retro_item";
+
+    type Error = CustomToolError;
+    type Args = SuggestRetroItemArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "レトロスペクティブボードにKPTアイテムを提案するツール。会話中に気づいた良かった点(Keep)、問題点(Problem)、改善提案(Try)をレトロボードに追加します。アクティブなレトロセッションが必要です。".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["keep", "problem", "try"],
+                        "description": "KPTカテゴリ: keep=継続すべき良い取り組み, problem=解決すべき課題, try=次回試したい改善案"
+                    },
+                    "content": { "type": "string", "description": "アイテムの内容" }
+                },
+                "required": ["category", "content"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let sessions = crate::db::get_retro_sessions(self.app.clone(), self.project_id.clone())
+            .await
+            .map_err(|e| CustomToolError(e))?;
+
+        let active_session = sessions
+            .iter()
+            .find(|s| s.status == "draft" || s.status == "in_progress")
+            .ok_or_else(|| {
+                CustomToolError(
+                    "アクティブなレトロセッションがありません。レトロスペクティブを開始してから再度お試しください。ユーザーにレトロセッションの開始を案内してください。".to_string(),
+                )
+            })?;
+
+        crate::db::add_retro_item(
+            self.app.clone(),
+            active_session.id.clone(),
+            args.category.clone(),
+            args.content.clone(),
+            "po".to_string(),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| CustomToolError(e))?;
+
+        let _ = self.app.emit("kanban-updated", ());
+        let category_label = match args.category.as_str() {
+            "keep" => "Keep",
+            "problem" => "Problem",
+            "try" => "Try",
+            _ => &args.category,
+        };
+        Ok(format!(
+            "レトロの {} に「{}」を追加しました。",
+            category_label, args.content
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{normalize_story_title, story_title_similarity};

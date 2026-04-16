@@ -525,7 +525,7 @@ function AppContent() {
                             <div className="pointer-events-auto -translate-x-full">
                                 <EdgeTabHandle
                                     side="right"
-                                    label="PO アシスタント"
+                                    label="PO アシスタント / ふせん"
                                     icon={Bot}
                                     active={isSidebarOpen}
                                     onClick={() => setIsSidebarOpen((prev) => !prev)}

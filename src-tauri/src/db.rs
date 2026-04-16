@@ -2435,10 +2435,12 @@ pub async fn insert_story_with_tasks(
         existing_id
     } else {
         let new_id = uuid::Uuid::new_v4().to_string();
-        let q_story = "INSERT INTO stories (id, project_id, title, description, acceptance_criteria, status, priority) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        let q_story = "INSERT INTO stories (id, project_id, sequence_number, title, description, acceptance_criteria, status, priority) \
+                       VALUES (?, ?, (SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM stories WHERE project_id = ?), ?, ?, ?, ?, ?)";
 
         let _ = sqlx::query(q_story)
             .bind(&new_id)
+            .bind(project_id)
             .bind(project_id)
             .bind(&story_draft.title)
             .bind(&story_draft.description)
@@ -2457,11 +2459,13 @@ pub async fn insert_story_with_tasks(
     for task in &tasks_draft {
         let task_id = uuid::Uuid::new_v4().to_string();
         let task_priority = task.priority.unwrap_or(3);
-        let q_task = "INSERT INTO tasks (id, project_id, story_id, title, description, status, priority) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        let q_task = "INSERT INTO tasks (id, project_id, story_id, sequence_number, title, description, status, priority) \
+                      VALUES (?, ?, ?, (SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM tasks WHERE project_id = ?), ?, ?, ?, ?)";
         let _ = sqlx::query(q_task)
             .bind(&task_id)
             .bind(project_id)
             .bind(&story_id)
+            .bind(project_id)
             .bind(&task.title)
             .bind(&task.description)
             .bind("To Do")

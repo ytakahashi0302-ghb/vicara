@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
     CalendarDays,
     CheckCircle2,
@@ -264,6 +265,17 @@ export function RetrospectiveView() {
 
         return () => {
             window.removeEventListener(RETRO_ITEMS_UPDATED_EVENT, handleRetroItemsUpdated);
+        };
+    }, [currentSession?.id, fetchItems]);
+
+    // POアシスタントがバックエンドからレトロアイテムを追加したときに再取得する
+    useEffect(() => {
+        const sessionId = currentSession?.id ?? null;
+        const unlisten = listen('kanban-updated', () => {
+            void fetchItems(sessionId);
+        });
+        return () => {
+            void unlisten.then((fn) => fn());
         };
     }, [currentSession?.id, fetchItems]);
 

@@ -46,10 +46,23 @@ pub struct ChatTaskResponse {
     pub reply: String,
 }
 
+/// CLI マルチアクション用 action ペイロード
+///   action: "create_story" | "add_note" | "suggest_retro"
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PoAction {
+    pub action: String,
+    pub payload: serde_json::Value,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct PoAssistantExecutionPlan {
     pub reply: Option<String>,
+    /// 旧フォーマット（後方互換のために維持）
+    #[serde(default)]
     pub operations: Vec<crate::ai_tools::CreateStoryAndTasksArgs>,
+    /// 新マルチアクションフォーマット
+    #[serde(default)]
+    pub actions: Vec<PoAction>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -917,7 +930,127 @@ async fn apply_team_leader_execution_plan(
     plan: PoAssistantExecutionPlan,
     before_counts: ProjectBacklogCounts,
 ) -> Result<Option<ChatTaskResponse>, String> {
-    let PoAssistantExecutionPlan { reply, operations } = plan;
+    let PoAssistantExecutionPlan {
+        reply,
+        operations,
+        actions,
+    } = plan;
+
+    // ── 新フォーマット: actions 配列のルーティング処理 ──────────────────────
+    let mut action_results: Vec<String> = Vec::new();
+    for action in actions {
+        match action.action.as_str() {
+            "create_story" => {
+                let args: crate::ai_tools::CreateStoryAndTasksArgs =
+                    serde_json::from_value(action.payload).map_err(|e| {
+                        format!("create_story payload のパースに失敗しました: {}", e)
+                    })?;
+                if args.tasks.is_empty() {
+                    continue;
+                }
+                crate::ai_tools::guard_story_creation_against_duplicates(
+                    app,
+                    project_id,
+                    args.target_story_id.as_deref(),
+                    args.story_title.as_deref(),
+                )
+                .await?;
+                let story_draft = crate::db::StoryDraftInput {
+                    target_story_id: args.target_story_id.clone(),
+                    title: args
+                        .story_title
+                        .clone()
+                        .unwrap_or_else(|| "Untitled Story".to_string()),
+                    description: args.story_description.clone(),
+                    acceptance_criteria: args.acceptance_criteria.clone(),
+                    priority: args.story_priority,
+                };
+                crate::db::insert_story_with_tasks(app, project_id, story_draft, args.tasks)
+                    .await?;
+                let _ = app.emit("kanban-updated", ());
+                action_results.push("PBI・タスクを登録しました。".to_string());
+            }
+            "add_note" => {
+                let args: crate::ai_tools::AddProjectNoteArgs =
+                    serde_json::from_value(action.payload)
+                        .map_err(|e| format!("add_note payload のパースに失敗しました: {}", e))?;
+                crate::db::add_project_note(
+                    app.clone(),
+                    project_id.to_string(),
+                    args.sprint_id,
+                    args.title.clone(),
+                    args.content,
+                    Some("po_assistant".to_string()),
+                )
+                .await
+                .map_err(|e| format!("ふせんの追加に失敗しました: {}", e))?;
+                let _ = app.emit("kanban-updated", ());
+                action_results.push(format!("ふせん「{}」をボードに追加しました。", args.title));
+            }
+            "suggest_retro" => {
+                let args: crate::ai_tools::SuggestRetroItemArgs =
+                    serde_json::from_value(action.payload).map_err(|e| {
+                        format!("suggest_retro payload のパースに失敗しました: {}", e)
+                    })?;
+                let sessions =
+                    crate::db::get_retro_sessions(app.clone(), project_id.to_string())
+                        .await
+                        .map_err(|e| format!("レトロセッションの取得に失敗しました: {}", e))?;
+                let active = sessions
+                    .iter()
+                    .find(|s| s.status == "draft" || s.status == "in_progress");
+                match active {
+                    Some(session) => {
+                        crate::db::add_retro_item(
+                            app.clone(),
+                            session.id.clone(),
+                            args.category.clone(),
+                            args.content.clone(),
+                            "po".to_string(),
+                            None,
+                            None,
+                        )
+                        .await
+                        .map_err(|e| format!("レトロアイテムの追加に失敗しました: {}", e))?;
+                        let _ = app.emit("kanban-updated", ());
+                        let label = match args.category.as_str() {
+                            "keep" => "Keep",
+                            "problem" => "Problem",
+                            "try" => "Try",
+                            _ => &args.category,
+                        };
+                        action_results.push(format!(
+                            "レトロの {} に「{}」を追加しました。",
+                            label, args.content
+                        ));
+                    }
+                    None => {
+                        action_results.push(
+                            "アクティブなレトロセッションがないため、レトロアイテムの追加をスキップしました。".to_string(),
+                        );
+                    }
+                }
+            }
+            unknown => {
+                action_results.push(format!(
+                    "不明なアクション種別「{}」はスキップしました。",
+                    unknown
+                ));
+            }
+        }
+    }
+
+    // actions が処理された場合は早期リターン
+    if !action_results.is_empty() {
+        let summary = if let Some(r) = reply {
+            format!("{}\n\n{}", r, action_results.join("\n"))
+        } else {
+            action_results.join("\n")
+        };
+        return Ok(Some(ChatTaskResponse { reply: summary }));
+    }
+
+    // ── 旧フォーマット: operations 配列の処理（後方互換） ───────────────────
     if operations.is_empty() {
         return Ok(None);
     }
@@ -1507,7 +1640,7 @@ pub async fn chat_with_team_leader(
         } => {
             let mutation_requested = looks_like_backlog_mutation_request(&latest_user_message);
             let system_prompt = format!(
-                "あなたは vicara の Scrum Team に所属する POアシスタントです。あなたの役割は、プロダクトオーナーの意思決定を支援しながら、要求の具体化、バックログの優先順位整理、追加タスクの登録を進めることです。ユーザーから機能要件や追加タスクの要望があった場合、自身が持つツール (`create_story_and_tasks`) を必ず呼び出して、ストーリーとサブタスク群をデータベースに自動登録してください。\n\n【最重要ルール】\n- ユーザーがストーリーやタスクの作成・追加・登録を求めた場合、説明だけで終わらせず `create_story_and_tasks` を使うこと\n- 既存ストーリーにタスクを追加する依頼では、コンテキスト中の story ID を読んで `target_story_id` を必ず指定すること\n- 依頼が「バックログを1つ作って」のように抽象的でも、PRODUCT_CONTEXT.md / ARCHITECTURE.md / Rule.md と既存バックログからプロダクト固有の具体案を1件具体化して登録すること\n- 「新しいバックログ項目」「要求詳細を整理する」などのプレースホルダ名は禁止\n- ツールを呼んでいないのに「追加しました」「登録しました」と断定してはいけない\n- ツールが失敗した場合は、成功を装わずエラー内容を簡潔に伝えること\n\n【現在のプロダクトの状況（既存バックログ等）】\n{}\n\n【優先度と依存関係の設定ルール】\nストーリーとタスクを作成する際は、必ず以下のフィールドを設定してください：\n- story_priority: 整数 1〜5（小さいほど優先度が高い）\n- 各タスクの priority: 整数 1〜5（小さいほど優先度が高い）\n- 各タスクの blocked_by_indices: 先行タスクの配列インデックス（0始まり）を指定。依存がなければ省略か空配列\n\n優先度の判断基準（1〜5、数値が小さいほど重要）:\n- 1: 最重要 — アーキテクチャの根幹、他の全タスクをブロックする基盤作業\n- 2: 高優先 — クリティカルパス上のコア機能\n- 3: 中優先 — 重要な機能実装だが他をブロックしない（デフォルト）\n- 4: 低優先 — サポートタスク、テスト、軽微な改善\n- 5: 最低優先 — ドキュメント、UIの微調整、オプション機能\n\n【重要】ツール実行に失敗した場合は、エラー内容を確認して原因をユーザーに報告、または代替策を考えてください。ツールが失敗したからといって、決してユーザーに手動での登録作業を丸投げしないでください。\n\n会話の返答は必ず以下の形式のJSONオブジェクトのみで返してください。\n\n{{\"reply\": \"ツール実行結果やユーザーへのメッセージ内容\"}}",
+                "あなたは vicara の Scrum Team に所属する POアシスタントです。あなたの役割は、プロダクトオーナーの意思決定を支援しながら、要求の具体化、バックログの優先順位整理、追加タスクの登録を進めることです。ユーザーから機能要件や追加タスクの要望があった場合、自身が持つツール (`create_story_and_tasks`) を必ず呼び出して、PBI（プロダクトバックログアイテム）とサブタスク群をデータベースに自動登録してください。\n\n【用語ルール】\n- ユーザーへの返答では「ストーリー」ではなく必ず「PBI」と呼ぶこと\n- 例: 「PBI・タスクを登録しました」「既存PBIにタスクを追加しました」\n\n【最重要ルール】\n- `create_story_and_tasks` はユーザーが「PBIに追加して」「バックログに登録して」「タスクを作って」など**バックログ追加を明示的に依頼した場合のみ**使うこと\n- 「次のTRYとして〜」「レトロに追加して」「改善提案として〜」などレトロ・KPT関連の依頼では `create_story_and_tasks` を使わないこと\n- ユーザーが明示的に求めていないのに自己判断でPBIを作ることは禁止\n- 既存PBIにタスクを追加する依頼では、コンテキスト中の story ID を読んで `target_story_id` を必ず指定すること\n- 依頼が「バックログを1つ作って」のように抽象的でも、PRODUCT_CONTEXT.md / ARCHITECTURE.md / Rule.md と既存バックログからプロダクト固有の具体案を1件具体化して登録すること\n- 「新しいバックログ項目」「要求詳細を整理する」などのプレースホルダ名は禁止\n- ツールを呼んでいないのに「追加しました」「登録しました」と断定してはいけない\n- ツールが失敗した場合は、成功を装わずエラー内容を簡潔に伝えること\n\n【現在のプロダクトの状況（既存バックログ等）】\n{}\n\n【優先度と依存関係の設定ルール】\nPBIとタスクを作成する際は、必ず以下のフィールドを設定してください：\n- story_priority: 整数 1〜5（小さいほど優先度が高い）\n- 各タスクの priority: 整数 1〜5（小さいほど優先度が高い）\n- 各タスクの blocked_by_indices: 先行タスクの配列インデックス（0始まり）を指定。依存がなければ省略か空配列\n\n優先度の判断基準（1〜5、数値が小さいほど重要）:\n- 1: 最重要 — アーキテクチャの根幹、他の全タスクをブロックする基盤作業\n- 2: 高優先 — クリティカルパス上のコア機能\n- 3: 中優先 — 重要な機能実装だが他をブロックしない（デフォルト）\n- 4: 低優先 — サポートタスク、テスト、軽微な改善\n- 5: 最低優先 — ドキュメント、UIの微調整、オプション機能\n\n【重要】ツール実行に失敗した場合は、エラー内容を確認して原因をユーザーに報告、または代替策を考えてください。ツールが失敗したからといって、決してユーザーに手動での登録作業を丸投げしないでください。\n\n【レトロスペクティブ連携 — ふせん＆KPT提案】\n- 【最重要】ユーザーが「PBIに追加」「タスクを登録」など明示的にバックログ操作を求めた場合は `add_project_note` を絶対に呼ばないこと。その場合は `create_story_and_tasks` のみを使うこと。\n- `add_project_note`（ふせん）は、ユーザーが明示的に求めていない場面で会話から自然に浮かんだ気づき・懸念・メモを記録するためだけに使うこと。\n- プロセスの改善点、良かった点、問題点に気づいた場合は、`suggest_retro_item` ツールでレトロボードへKPTアイテムを積極的に提案してください。\n- カテゴリの判断基準:\n  - Keep: 継続すべき良い取り組みやプラクティス\n  - Problem: 解決すべき課題や障害\n  - Try: 次回試してみたい改善案\n- ツールの使用は明らかに有用な場合に限り、過剰な呼び出しは避けてください。\n- レトロセッションが存在しない場合にエラーが返ったら、ユーザーにレトロセッションの開始を案内してください。\n\n会話の返答は必ず以下の形式のJSONオブジェクトのみで返してください。\n\n{{\"reply\": \"ツール実行結果やユーザーへのメッセージ内容\"}}",
                 context_md
             );
 
@@ -1604,17 +1737,29 @@ pub async fn chat_with_team_leader(
                 serialize_chat_history(&prior_messages)
             };
             let cli_prompt = format!(
-                r#"あなたは vicara の Scrum Team に所属する POアシスタントです。会話内容と既存バックログを踏まえ、必要ならバックログ更新計画を JSON で返してください。CLI ではアプリ側が JSON 計画を解釈して DB 登録を実行します。
+                r#"あなたは vicara の Scrum Team に所属する POアシスタントです。会話内容と既存バックログを踏まえ、必要なアクションを JSON で返してください。CLI ではアプリ側が JSON を解釈して DB 登録・ノート追加・レトロ追加を実行します。
 
-【ルール】
-- バックログの追加・登録が不要な相談なら `operations` は空配列にする
-- 既存ストーリーにタスクを追加する場合は、必ずコンテキストに存在する story ID を `target_story_id` に入れる
-- 新規ストーリーを作る場合のみ `target_story_id` を null にし、`story_title` を必須で入れる
-- 依頼が抽象的な新規バックログ作成でも、PRODUCT_CONTEXT.md / ARCHITECTURE.md / Rule.md と既存バックログからプロダクト固有の具体案を1件生成する
-- 「新しいバックログ項目」「要求詳細を整理する」などのプレースホルダ名は禁止
-- `tasks` は作成時に必ず 1 件以上含める
-- 各 task には `title`, `description`, `priority`, `blocked_by_indices` を含める
-- story_priority / task.priority は整数 1〜5
+【用語ルール】
+- `reply` フィールドでユーザーに返す文章では「ストーリー」ではなく必ず「PBI」と表記すること
+
+【アクション種別】
+- `create_story` : バックログにPBI（プロダクトバックログアイテム）＆タスクを登録する
+- `add_note`     : 会話中の気づきを「ふせん」としてボードに残す
+- `suggest_retro`: レトロボードに KPT アイテムを提案する（keep / problem / try）
+
+【create_story の使用条件 — 最重要】
+- ユーザーが「PBIに追加して」「バックログに登録して」「タスクを作って」など、**バックログへの追加を明示的に依頼した場合のみ** `create_story` を使うこと
+- 「次のTRYとして〜」「レトロに追加して」「ふせんに残して」「改善提案として〜」などレトロ・KPT・ふせん関連の依頼では `create_story` を絶対に使わないこと
+- ユーザーが明示的に求めていないのに「便宜的にタスクも作っておこう」という自己判断での `create_story` 使用は禁止
+
+【その他のルール】
+- アクション不要なら `actions` は空配列にする
+- `create_story` の場合: 既存PBIにタスクを追加するときは `target_story_id` を必ず指定し、新規なら null にして `story_title` を必須で入れる
+- `create_story` の場合: 依頼が抽象的でも、PRODUCT_CONTEXT.md / ARCHITECTURE.md と既存バックログから具体案を1件生成する（プレースホルダ名禁止）
+- `create_story` の場合: `tasks` は必ず 1 件以上、各タスクに `title`, `description`, `priority`, `blocked_by_indices` を含める
+- `create_story` の場合: story_priority / task.priority は整数 1〜5
+- `add_note` の場合: ユーザーが明示的にPBI/タスク作成を求めた場合は使わない。会話から自然に浮かんだ気づき・メモのみに使う。`sprint_id` は省略可
+- `suggest_retro` の場合: Keep=継続したい良い点、Problem=課題、Try=改善提案。レトロセッション不在でも記録する（アプリ側でハンドリング）
 - ユーザー向け説明は `reply` に簡潔に書く
 - 出力は必ず JSON オブジェクトのみ
 
@@ -1627,24 +1772,42 @@ pub async fn chat_with_team_leader(
 【今回のユーザー依頼】
 {latest_user_message}
 
-返却形式:
+返却形式（複数アクションを同時に指定可能）:
 {{
   "reply": "ユーザーへ返すメッセージ",
-  "operations": [
+  "actions": [
     {{
-      "target_story_id": null,
-      "story_title": "ストーリー名",
-      "story_description": "説明",
-      "acceptance_criteria": "受け入れ条件",
-      "story_priority": 3,
-      "tasks": [
-        {{
-          "title": "タスク名",
-          "description": "実装内容",
-          "priority": 2,
-          "blocked_by_indices": [0]
-        }}
-      ]
+      "action": "create_story",
+      "payload": {{
+        "target_story_id": null,
+        "story_title": "PBI名",
+        "story_description": "説明",
+        "acceptance_criteria": "受け入れ条件",
+        "story_priority": 3,
+        "tasks": [
+          {{
+            "title": "タスク名",
+            "description": "実装内容",
+            "priority": 2,
+            "blocked_by_indices": [0]
+          }}
+        ]
+      }}
+    }},
+    {{
+      "action": "add_note",
+      "payload": {{
+        "title": "ふせんのタイトル",
+        "content": "内容（Markdown可）",
+        "sprint_id": null
+      }}
+    }},
+    {{
+      "action": "suggest_retro",
+      "payload": {{
+        "category": "try",
+        "content": "改善提案の内容"
+      }}
     }}
   ]
 }}"#
@@ -1666,7 +1829,7 @@ pub async fn chat_with_team_leader(
             .await;
 
             let plan = result.value;
-            if plan.operations.is_empty() {
+            if plan.operations.is_empty() && plan.actions.is_empty() {
                 if generic_backlog_request {
                     if !has_product_context {
                         return Ok(ChatTaskResponse {

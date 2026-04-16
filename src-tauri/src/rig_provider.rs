@@ -613,6 +613,14 @@ pub async fn chat_team_leader_with_tools(
                 app: app.clone(),
                 project_id: project_id.to_string(),
             };
+            let note_tool = crate::ai_tools::AddProjectNoteTool {
+                app: app.clone(),
+                project_id: project_id.to_string(),
+            };
+            let retro_tool = crate::ai_tools::SuggestRetroItemTool {
+                app: app.clone(),
+                project_id: project_id.to_string(),
+            };
             let started_at = current_timestamp_millis()?;
             let client = anthropic::Client::new(api_key)
                 .map_err(|e| format!("Failed to create Anthropic client: {}", e))?;
@@ -621,6 +629,8 @@ pub async fn chat_team_leader_with_tools(
                 .preamble(system_prompt)
                 .max_tokens(4096)
                 .tool(tool)
+                .tool(note_tool)
+                .tool(retro_tool)
                 .default_max_turns(5)
                 .build();
             let response = tokio::time::timeout(
@@ -666,12 +676,22 @@ pub async fn chat_team_leader_with_tools(
                     app: app.clone(),
                     project_id: project_id.to_string(),
                 };
+                let note_tool = crate::ai_tools::AddProjectNoteTool {
+                    app: app.clone(),
+                    project_id: project_id.to_string(),
+                };
+                let retro_tool = crate::ai_tools::SuggestRetroItemTool {
+                    app: app.clone(),
+                    project_id: project_id.to_string(),
+                };
                 let mut attempt_history = base_history.clone();
                 let agent = client
                     .agent(model)
                     .preamble(system_prompt)
                     .max_tokens(4096)
                     .tool(tool)
+                    .tool(note_tool)
+                    .tool(retro_tool)
                     .default_max_turns(5)
                     .build();
                 let response = tokio::time::timeout(
