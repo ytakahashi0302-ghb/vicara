@@ -1,4 +1,4 @@
-use crate::{db, git, preview};
+use crate::{db, git, node_dependencies, preview};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -126,6 +126,25 @@ fn merge_failed_due_to_conflict(stdout: &str, stderr: &str) -> bool {
 
 fn infer_project_root_from_worktree_path(worktree_path: &Path) -> Option<PathBuf> {
     worktree_path.parent()?.parent().map(Path::to_path_buf)
+}
+
+fn preview_pid_from_record(record: Option<&db::WorktreeRecord>) -> Option<u32> {
+    record
+        .and_then(|item| item.preview_pid)
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
+async fn stop_preview_for_task(
+    app_handle: &AppHandle,
+    preview_state: &PreviewState,
+    task_id: &str,
+) -> Result<bool, String> {
+    let record = db::get_worktree_by_task_id(app_handle, task_id).await?;
+    preview::stop_server_or_fallback_pid(
+        preview_state,
+        task_id,
+        preview_pid_from_record(record.as_ref()),
+    )
 }
 
 async fn resolve_worktree_path_for_task(
@@ -298,31 +317,24 @@ fn ensure_merge_preflight_clean(project_path: &Path) -> Result<(), String> {
     Err(build_dirty_project_root_message(project_path, &status))
 }
 
-fn link_node_modules(project_path: &Path, wt_path: &Path) -> Result<(), String> {
-    let main_nm = project_path.join("node_modules");
-    let wt_nm = wt_path.join("node_modules");
-
-    if !main_nm.exists() || wt_nm.exists() {
-        return Ok(());
-    }
-
+fn create_directory_link(source: &Path, target: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(&main_nm, &wt_nm)
+        std::os::unix::fs::symlink(source, target)
             .map_err(|e| format!("node_modules symlink作成エラー: {}", e))?;
     }
 
     #[cfg(windows)]
     {
-        let symlink_result = std::os::windows::fs::symlink_dir(&main_nm, &wt_nm);
+        let symlink_result = std::os::windows::fs::symlink_dir(source, target);
         if symlink_result.is_err() {
             let output = Command::new("cmd")
                 .args([
                     "/C",
                     "mklink",
                     "/J",
-                    &wt_nm.to_string_lossy(),
-                    &main_nm.to_string_lossy(),
+                    &target.to_string_lossy(),
+                    &source.to_string_lossy(),
                 ])
                 .output()
                 .map_err(|e| format!("junction作成エラー: {}", e))?;
@@ -339,14 +351,144 @@ fn link_node_modules(project_path: &Path, wt_path: &Path) -> Result<(), String> 
     Ok(())
 }
 
+fn collect_node_modules_relative_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    fn visit(root: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+        for entry in std::fs::read_dir(current).map_err(|error| {
+            format!(
+                "node_modules 探索中にディレクトリ読み取りに失敗しました ({}): {}",
+                current.display(),
+                error
+            )
+        })? {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "node_modules 探索中にエントリ読み取りに失敗しました ({}): {}",
+                    current.display(),
+                    error
+                )
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                format!(
+                    "node_modules 探索中に種別判定に失敗しました ({}): {}",
+                    entry.path().display(),
+                    error
+                )
+            })?;
+            if !file_type.is_dir() && !file_type.is_symlink() {
+                continue;
+            }
+
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name == ".git" || file_name == WORKTREE_DIR {
+                continue;
+            }
+
+            if file_name == "node_modules" {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| {
+                        format!(
+                            "node_modules 相対パス化に失敗しました ({}): {}",
+                            path.display(),
+                            error
+                        )
+                    })?
+                    .to_path_buf();
+                out.push(relative);
+                continue;
+            }
+
+            if file_type.is_dir() {
+                visit(root, &path, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut results = Vec::new();
+    if root.exists() {
+        visit(root, root, &mut results)?;
+    }
+    results.sort();
+    Ok(results)
+}
+
+fn link_node_modules(project_path: &Path, wt_path: &Path) -> Result<(), String> {
+    for relative_nm in collect_node_modules_relative_paths(project_path)? {
+        let main_nm = project_path.join(&relative_nm);
+        let wt_nm = wt_path.join(&relative_nm);
+        if !main_nm.exists() || wt_nm.exists() {
+            continue;
+        }
+
+        if let Some(parent) = wt_nm.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("node_modules 親ディレクトリ作成エラー: {}", e))?;
+        }
+
+        create_directory_link(&main_nm, &wt_nm)?;
+    }
+
+    Ok(())
+}
+
+fn project_root_from_worktree_path(wt_path: &Path) -> Result<PathBuf, String> {
+    let Some(worktree_root) = wt_path.parent() else {
+        return Err(format!(
+            "worktree の親ディレクトリを解決できませんでした: {}",
+            wt_path.display()
+        ));
+    };
+    let Some(dir_name) = worktree_root.file_name().and_then(|name| name.to_str()) else {
+        return Err(format!(
+            "worktree ルート名を解決できませんでした: {}",
+            worktree_root.display()
+        ));
+    };
+    if dir_name != WORKTREE_DIR {
+        return Err(format!(
+            "worktree パスが想定外です ({} が `{}` 配下ではありません)",
+            wt_path.display(),
+            WORKTREE_DIR
+        ));
+    }
+
+    worktree_root
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            format!(
+                "worktree に対応する project root を解決できませんでした: {}",
+                wt_path.display()
+            )
+        })
+}
+
+pub(crate) fn ensure_worktree_node_modules_links(wt_path: &Path) -> Result<(), String> {
+    let project_root = project_root_from_worktree_path(wt_path)?;
+    link_node_modules(&project_root, wt_path)
+}
+
 fn remove_worktree_node_modules_link(wt_path: &Path) {
-    let wt_nm = wt_path.join("node_modules");
-    if wt_nm.is_symlink() || (cfg!(windows) && wt_nm.exists()) {
-        let _ = if wt_nm.is_symlink() {
-            std::fs::remove_file(&wt_nm)
-        } else {
-            std::fs::remove_dir(&wt_nm)
-        };
+    if let Ok(mut node_modules_paths) = collect_node_modules_relative_paths(wt_path) {
+        node_modules_paths.sort_by(|a, b| {
+            b.components()
+                .count()
+                .cmp(&a.components().count())
+                .then_with(|| b.cmp(a))
+        });
+
+        for relative_nm in node_modules_paths {
+            let wt_nm = wt_path.join(relative_nm);
+            if wt_nm.is_symlink() || (cfg!(windows) && wt_nm.exists()) {
+                let _ = if wt_nm.is_symlink() {
+                    std::fs::remove_file(&wt_nm)
+                } else {
+                    std::fs::remove_dir(&wt_nm)
+                };
+            }
+        }
     }
 }
 
@@ -384,6 +526,70 @@ async fn upsert_worktree_record(
     .await?;
 
     Ok(())
+}
+
+fn cleanup_worktree_artifacts(project: &Path, wt_path: &Path, br_name: &str) -> Result<(), String> {
+    let mut cleanup_logs = Vec::new();
+
+    if let Err(error) = git::run_git(
+        project,
+        &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
+    ) {
+        cleanup_logs.push(format!("git worktree remove: {}", error));
+    }
+
+    if wt_path.exists() {
+        std::fs::remove_dir_all(wt_path).map_err(|error| {
+            format!(
+                "ワークツリーディレクトリの削除に失敗しました ({}): {}",
+                wt_path.display(),
+                error
+            )
+        })?;
+    }
+
+    if let Err(error) = git::run_git(project, &["worktree", "prune"]) {
+        cleanup_logs.push(format!("git worktree prune: {}", error));
+    }
+
+    if git::run_git(project, &["branch", "-d", br_name]).is_err() {
+        if let Err(error) = git::run_git(project, &["branch", "-D", br_name]) {
+            cleanup_logs.push(format!("git branch -D {}: {}", br_name, error));
+        }
+    }
+
+    let worktree_registered = is_registered_worktree_path(project, wt_path)?;
+    let worktree_directory_remaining = wt_path.exists();
+    let branch_remaining = branch_exists(project, br_name)?;
+
+    if !worktree_registered && !worktree_directory_remaining && !branch_remaining {
+        return Ok(());
+    }
+
+    let mut reasons = Vec::new();
+    if worktree_registered {
+        reasons.push(format!(
+            "git が worktree をまだ登録しています: {}",
+            wt_path.display()
+        ));
+    }
+    if worktree_directory_remaining {
+        reasons.push(format!(
+            "ワークツリーディレクトリが残っています: {}",
+            wt_path.display()
+        ));
+    }
+    if branch_remaining {
+        reasons.push(format!("task branch が残っています: {}", br_name));
+    }
+    if !cleanup_logs.is_empty() {
+        reasons.push(format!("cleanup log: {}", cleanup_logs.join(" / ")));
+    }
+
+    Err(format!(
+        "ワークツリー削除を完了できませんでした。{}",
+        reasons.join(" / ")
+    ))
 }
 
 #[tauri::command]
@@ -492,23 +698,9 @@ pub async fn remove_worktree(
     let wt_path = worktree_path(&project_path, &task_id);
     let br_name = branch_name(&task_id);
 
-    let _ = preview_state.stop_server(&task_id);
+    let _ = stop_preview_for_task(&app_handle, preview_state.inner(), &task_id).await;
     remove_worktree_node_modules_link(&wt_path);
-
-    let _ = git::run_git(
-        project,
-        &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
-    );
-
-    if wt_path.exists() {
-        let _ = std::fs::remove_dir_all(&wt_path);
-    }
-
-    let _ = git::run_git(project, &["worktree", "prune"]);
-
-    if git::run_git(project, &["branch", "-d", &br_name]).is_err() {
-        let _ = git::run_git(project, &["branch", "-D", &br_name]);
-    }
+    cleanup_worktree_artifacts(project, &wt_path, &br_name)?;
 
     {
         let mut worktrees = state
@@ -538,6 +730,7 @@ pub async fn merge_worktree(
     migrate_legacy_worktree_gitignore(project)?;
     let wt_path = worktree_path(&project_path, &task_id);
     let br_name = branch_name(&task_id);
+    let worktree_record = db::get_worktree_by_task_id(&app_handle, &task_id).await?;
     let worktree_registered = if wt_path.exists() {
         is_registered_worktree_path(project, &wt_path)?
     } else {
@@ -660,7 +853,11 @@ pub async fn merge_worktree(
         return Ok(MergeResult::Conflict { conflicting_files });
     }
 
-    let _ = preview_state.stop_server(&task_id);
+    let _ = preview::stop_server_or_fallback_pid(
+        preview_state.inner(),
+        &task_id,
+        preview_pid_from_record(worktree_record.as_ref()),
+    );
     remove_worktree_node_modules_link(&wt_path);
 
     let _ = git::run_git(
@@ -794,7 +991,43 @@ pub async fn start_preview_server(
         );
     }
 
-    let info = preview::start_preview_for_task(&preview_state, &task_id, &wt_path, command)?;
+    let worktree_record = db::get_worktree_by_task_id(&app_handle, &task_id).await?;
+    let stopped_existing = preview::stop_server_or_fallback_pid(
+        preview_state.inner(),
+        &task_id,
+        preview_pid_from_record(worktree_record.as_ref()),
+    )?;
+    if stopped_existing {
+        let _ = db::update_worktree_record_state(&app_handle, &task_id, None, None, "active").await;
+    }
+
+    ensure_worktree_node_modules_links(&wt_path)?;
+    let normalized_command = preview::normalize_preview_command(command);
+    if let Some(installed_dirs) = node_dependencies::ensure_preview_dependencies_ready(
+        &app_handle,
+        &task_id,
+        &wt_path,
+        &normalized_command,
+    )
+    .await?
+    {
+        log::info!(
+            "Preview dependency self-heal completed for task {}: {}",
+            task_id,
+            if installed_dirs.is_empty() {
+                "(no package directories reported)".to_string()
+            } else {
+                installed_dirs.join(", ")
+            }
+        );
+    }
+
+    let info = preview::start_preview_for_task(
+        &preview_state,
+        &task_id,
+        &wt_path,
+        Some(normalized_command),
+    )?;
     upsert_worktree_record(
         &app_handle,
         &task_id,
@@ -815,7 +1048,7 @@ pub async fn stop_preview_server(
     preview_state: State<'_, PreviewState>,
     task_id: String,
 ) -> Result<bool, String> {
-    let stopped = preview_state.stop_server(&task_id)?.is_some();
+    let stopped = stop_preview_for_task(&app_handle, preview_state.inner(), &task_id).await?;
     let _ = db::update_worktree_record_state(&app_handle, &task_id, None, None, "active").await;
     Ok(stopped)
 }
@@ -953,6 +1186,25 @@ mod tests {
     }
 
     #[test]
+    fn test_preview_pid_from_record_converts_positive_i64() {
+        let record = db::WorktreeRecord {
+            id: "wt-1".to_string(),
+            task_id: "task-1".to_string(),
+            project_id: "project-1".to_string(),
+            worktree_path: "C:/repo/.vicara-worktrees/task-1".to_string(),
+            branch_name: "feature/task-1".to_string(),
+            preview_port: Some(5173),
+            preview_pid: Some(4242),
+            status: "active".to_string(),
+            created_at: "2026-04-18 00:00:00".to_string(),
+            updated_at: "2026-04-18 00:00:00".to_string(),
+        };
+
+        assert_eq!(preview_pid_from_record(Some(&record)), Some(4242));
+        assert_eq!(preview_pid_from_record(None), None);
+    }
+
+    #[test]
     fn test_create_and_remove_worktree() {
         let repo = setup_test_repo();
         let project_path = repo.path().to_string_lossy().to_string();
@@ -990,16 +1242,32 @@ mod tests {
         let branches = git::run_git(repo.path(), &["branch"]).unwrap();
         assert!(branches.contains("feature/task-test-001"));
 
-        let _ = git::run_git(
-            repo.path(),
-            &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],
-        );
-        let _ = git::run_git(repo.path(), &["worktree", "prune"]);
-        let _ = git::run_git(repo.path(), &["branch", "-D", &br_name]);
+        cleanup_worktree_artifacts(repo.path(), &wt_path, &br_name).unwrap();
 
         assert!(!wt_path.exists());
         let branches = git::run_git(repo.path(), &["branch"]).unwrap();
         assert!(!branches.contains("feature/task-test-001"));
+    }
+
+    #[test]
+    fn test_cleanup_worktree_artifacts_handles_stale_directory_and_branch() {
+        let repo = setup_test_repo();
+        let project_path = repo.path().to_string_lossy().to_string();
+        let task_id = "stale-branch";
+        let wt_path = worktree_path(&project_path, task_id);
+        let br_name = branch_name(task_id);
+
+        fs::create_dir_all(&wt_path).unwrap();
+        fs::write(wt_path.join("placeholder.txt"), "stale\n").unwrap();
+        git::run_git(repo.path(), &["branch", &br_name, "main"]).unwrap();
+
+        cleanup_worktree_artifacts(repo.path(), &wt_path, &br_name).unwrap();
+
+        assert!(!wt_path.exists(), "stale directory should be removed");
+        assert!(
+            !branch_exists(repo.path(), &br_name).unwrap(),
+            "stale task branch should be removed"
+        );
     }
 
     #[test]
@@ -1172,6 +1440,9 @@ mod tests {
         let nm_dir = repo.path().join("node_modules");
         fs::create_dir_all(nm_dir.join("some-package")).unwrap();
         fs::write(nm_dir.join("some-package/index.js"), "module.exports = {};").unwrap();
+        let frontend_nm_dir = repo.path().join("frontend").join("node_modules");
+        fs::create_dir_all(frontend_nm_dir.join("vite")).unwrap();
+        fs::write(frontend_nm_dir.join("vite/index.js"), "export default {};").unwrap();
 
         fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
         git::run_git(
@@ -1195,8 +1466,17 @@ mod tests {
             wt_nm.join("some-package/index.js").exists(),
             "Should be able to access files through symlink"
         );
+        let wt_frontend_nm = wt_path.join("frontend").join("node_modules");
+        assert!(
+            wt_frontend_nm.exists(),
+            "nested node_modules link should exist"
+        );
+        assert!(
+            wt_frontend_nm.join("vite/index.js").exists(),
+            "Should be able to access nested files through symlink"
+        );
 
-        let _ = std::fs::remove_file(&wt_nm);
+        remove_worktree_node_modules_link(&wt_path);
         let _ = git::run_git(
             repo.path(),
             &["worktree", "remove", &wt_path.to_string_lossy(), "--force"],

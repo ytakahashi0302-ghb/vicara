@@ -23,7 +23,7 @@ import { VICARA_SETTINGS_UPDATED_EVENT } from '../../hooks/usePoAssistantAvatarI
 
 type TerminalSessionStatus = 'Starting' | 'Running' | 'Completed' | 'Failed' | 'Killed';
 
-interface ActiveClaudeSession {
+interface ActiveAgentSession {
     task_id: string;
     task_title: string;
     role_name: string;
@@ -43,19 +43,19 @@ interface TerminalTabSession {
     exitReason?: string;
 }
 
-interface ClaudeOutputPayload {
+interface AgentOutputPayload {
     task_id: string;
     output: string;
 }
 
-interface ClaudeExitPayload {
+interface AgentExitPayload {
     task_id: string;
     success: boolean;
     reason: string;
     new_status?: string;
 }
 
-interface ClaudeStreamRenderState {
+interface AgentCliStreamRenderState {
     buffer: string;
     hasThinking: boolean;
 }
@@ -70,7 +70,7 @@ interface FrontendAgentErrorDetail {
 
 const WELCOME_MESSAGE = '\x1b[38;5;12m[vicara]\x1b[0m Dev Agent Terminal Ready.\r\n';
 
-function createClaudeStreamRenderState(): ClaudeStreamRenderState {
+function createAgentCliStreamRenderState(): AgentCliStreamRenderState {
     return {
         buffer: '',
         hasThinking: false,
@@ -85,7 +85,7 @@ function getStringValue(value: unknown): string | null {
     return typeof value === 'string' ? value : null;
 }
 
-function renderClaudeAssistantText(messageValue: unknown, hasThinking: boolean): string {
+function renderAgentAssistantText(messageValue: unknown, hasThinking: boolean): string {
     if (hasThinking) {
         return '';
     }
@@ -103,7 +103,7 @@ function renderClaudeAssistantText(messageValue: unknown, hasThinking: boolean):
         .join('');
 }
 
-function renderClaudeStreamJsonLine(line: string, hasThinking: boolean): {
+function renderAgentCliStreamLine(line: string, hasThinking: boolean): {
     output: string;
     nextHasThinking: boolean;
 } {
@@ -151,7 +151,7 @@ function renderClaudeStreamJsonLine(line: string, hasThinking: boolean): {
 
         if (root.type === 'assistant') {
             return {
-                output: renderClaudeAssistantText(root.message, hasThinking),
+                output: renderAgentAssistantText(root.message, hasThinking),
                 nextHasThinking: hasThinking,
             };
         }
@@ -165,13 +165,13 @@ function renderClaudeStreamJsonLine(line: string, hasThinking: boolean): {
     }
 }
 
-function consumeClaudeStreamChunk(
+function consumeAgentCliStreamChunk(
     chunk: string,
-    previousState: ClaudeStreamRenderState,
+    previousState: AgentCliStreamRenderState,
     flush = false,
 ): {
     output: string;
-    nextState: ClaudeStreamRenderState;
+    nextState: AgentCliStreamRenderState;
 } {
     const normalizedChunk = chunk.replace(/\r\n/g, '\n');
     const combined = previousState.buffer + normalizedChunk;
@@ -183,7 +183,7 @@ function consumeClaudeStreamChunk(
     let nextHasThinking = previousState.hasThinking;
 
     for (const line of lines) {
-        const result = renderClaudeStreamJsonLine(line, nextHasThinking);
+        const result = renderAgentCliStreamLine(line, nextHasThinking);
         nextHasThinking = result.nextHasThinking;
         if (result.output) {
             rendered.push(result.output);
@@ -191,7 +191,7 @@ function consumeClaudeStreamChunk(
     }
 
     if (flush && trailingBuffer) {
-        const result = renderClaudeStreamJsonLine(trailingBuffer, nextHasThinking);
+        const result = renderAgentCliStreamLine(trailingBuffer, nextHasThinking);
         nextHasThinking = result.nextHasThinking;
         if (result.output) {
             rendered.push(result.output);
@@ -211,7 +211,7 @@ function buildSessionHeader(session: Pick<TerminalTabSession, 'roleName' | 'task
     return `\x1b[38;5;12m[${session.roleName}]\x1b[0m ${session.taskTitle}\r\n\x1b[38;5;8mModel: ${session.model || 'unknown'}\x1b[0m\r\n\r\n`;
 }
 
-function createSessionFromActiveSession(payload: ActiveClaudeSession): TerminalTabSession {
+function createSessionFromActiveSession(payload: ActiveAgentSession): TerminalTabSession {
     const baseSession: TerminalTabSession = {
         taskId: payload.task_id,
         taskTitle: payload.task_title,
@@ -351,7 +351,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
     const safeFitRef = useRef<() => void>(() => undefined);
     const activeTaskIdRef = useRef<string | null>(null);
     const sessionsRef = useRef<Record<string, TerminalTabSession>>({});
-    const claudeStreamStateRef = useRef<Record<string, ClaudeStreamRenderState>>({});
+    const agentCliStreamStateRef = useRef<Record<string, AgentCliStreamRenderState>>({});
     const { updateTaskStatus } = useScrum();
     const [sessions, setSessions] = useState<Record<string, TerminalTabSession>>({});
     const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -549,7 +549,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
 
         const restoreSessions = async () => {
             try {
-                const activeSessions = await invoke<ActiveClaudeSession[]>('get_active_claude_sessions');
+                const activeSessions = await invoke<ActiveAgentSession[]>('get_active_agent_sessions');
                 if (cancelled || activeSessions.length === 0) return;
 
                 setSessions((prev) => {
@@ -577,7 +577,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
 
                 setActiveTaskId((prev) => prev ?? activeSessions[0].task_id);
             } catch (error) {
-                console.error('Failed to restore active Claude sessions', error);
+                console.error('Failed to restore active agent sessions', error);
                 toast.error(`実行中セッションの復元に失敗しました: ${error}`);
             }
         };
@@ -596,8 +596,8 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                 nextUnlisteners.push(unlisten);
             };
 
-            await register<ActiveClaudeSession>('claude_cli_started', (event) => {
-                claudeStreamStateRef.current[event.payload.task_id] = createClaudeStreamRenderState();
+            await register<ActiveAgentSession>('agent_cli_started', (event) => {
+                agentCliStreamStateRef.current[event.payload.task_id] = createAgentCliStreamRenderState();
                 setSessions((prev) => {
                     const existing = prev[event.payload.task_id];
                     const created = createSessionFromActiveSession(event.payload);
@@ -619,11 +619,11 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                 setActiveTaskId(event.payload.task_id);
             });
 
-            await register<ClaudeOutputPayload>('claude_cli_output', (event) => {
+            await register<AgentOutputPayload>('agent_cli_output', (event) => {
                 const currentState =
-                    claudeStreamStateRef.current[event.payload.task_id] ?? createClaudeStreamRenderState();
-                const rendered = consumeClaudeStreamChunk(event.payload.output, currentState);
-                claudeStreamStateRef.current[event.payload.task_id] = rendered.nextState;
+                    agentCliStreamStateRef.current[event.payload.task_id] ?? createAgentCliStreamRenderState();
+                const rendered = consumeAgentCliStreamChunk(event.payload.output, currentState);
+                agentCliStreamStateRef.current[event.payload.task_id] = rendered.nextState;
                 if (!rendered.output) {
                     return;
                 }
@@ -648,11 +648,11 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
                 }
             });
 
-            await register<ClaudeExitPayload>('claude_cli_exit', async (event) => {
+            await register<AgentExitPayload>('agent_cli_exit', async (event) => {
                 const currentState =
-                    claudeStreamStateRef.current[event.payload.task_id] ?? createClaudeStreamRenderState();
-                const flushed = consumeClaudeStreamChunk('', currentState, true);
-                delete claudeStreamStateRef.current[event.payload.task_id];
+                    agentCliStreamStateRef.current[event.payload.task_id] ?? createAgentCliStreamRenderState();
+                const flushed = consumeAgentCliStreamChunk('', currentState, true);
+                delete agentCliStreamStateRef.current[event.payload.task_id];
                 const exitLine = createExitLine(event.payload.success, event.payload.reason);
                 const nextStatus = mapExitStatus(event.payload.success, event.payload.reason);
                 const appendedOutput = flushed.output + exitLine;
@@ -738,7 +738,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
             }
         };
 
-        window.addEventListener('claude_error', handleFrontendError);
+        window.addEventListener('agent_error', handleFrontendError);
         restoreSessions();
         const unlistenPromise = setupListeners();
 
@@ -747,7 +747,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
             void unlistenPromise.then((unlisteners) => {
                 unlisteners?.forEach((unlisten) => unlisten());
             });
-            window.removeEventListener('claude_error', handleFrontendError);
+            window.removeEventListener('agent_error', handleFrontendError);
         };
     }, [updateTaskStatus]);
 
@@ -761,7 +761,7 @@ export const TerminalDock: React.FC<TerminalDockProps> = ({ isMinimized, onToggl
     const handleKill = async () => {
         if (!activeSession || !canKillActiveSession) return;
         try {
-            await invoke('kill_claude_process', { taskId: activeSession.taskId });
+            await invoke('kill_agent_process', { taskId: activeSession.taskId });
             toast.success('強制終了シグナルを送信しました');
         } catch (e: any) {
             toast.error(`Kill Error: ${e}`);

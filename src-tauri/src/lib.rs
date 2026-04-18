@@ -1,13 +1,14 @@
 mod agent_retro;
+mod agent_runner;
 mod ai;
 mod ai_tools;
-mod claude_runner;
 mod cli_detection;
 mod cli_runner;
 mod db;
 mod git;
 mod inception;
 mod llm_observability;
+mod node_dependencies;
 mod preview;
 mod pty_commands;
 mod pty_manager;
@@ -169,7 +170,7 @@ pub fn run() {
                 .build(),
         )
         .manage(pty_manager::PtyManager::new())
-        .manage(claude_runner::AgentState::new())
+        .manage(agent_runner::AgentState::new())
         .manage(worktree::PreviewState::new())
         .manage(worktree::WorktreeState::new())
         .setup(|app| {
@@ -196,10 +197,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            ai::generate_tasks_from_story,
-            ai::refine_idea,
-            ai::generate_agent_retro_review,
-            ai::synthesize_retro_kpt,
+            ai::task_generation::generate_tasks_from_story,
+            ai::idea_refine::refine_idea,
+            ai::retro::generate_agent_retro_review,
+            ai::retro::synthesize_retro_kpt,
             cli_detection::detect_installed_clis,
             git::check_git_installed,
             db::get_projects,
@@ -247,22 +248,22 @@ pub fn run() {
             inception::generate_base_rule,
             inception::read_inception_file,
             inception::write_inception_file,
-            ai::chat_inception,
+            ai::inception::chat_inception,
             db::get_team_chat_messages,
             db::add_team_chat_message,
             db::clear_team_chat_messages,
             db::get_team_configuration,
             db::save_team_configuration,
-            ai::chat_with_team_leader,
+            ai::team_leader::chat_with_team_leader,
             rig_provider::get_available_models,
             rig_provider::check_api_key_status,
             rig_provider::check_ollama_status,
             pty_commands::pty_spawn,
             pty_commands::pty_execute,
             pty_commands::pty_kill,
-            claude_runner::get_active_claude_sessions,
-            claude_runner::execute_claude_task,
-            claude_runner::kill_claude_process,
+            agent_runner::get_active_agent_sessions,
+            agent_runner::execute_agent_task,
+            agent_runner::kill_agent_process,
             scaffolding::detect_tech_stack,
             scaffolding::check_scaffold_status,
             scaffolding::execute_scaffold_cli,

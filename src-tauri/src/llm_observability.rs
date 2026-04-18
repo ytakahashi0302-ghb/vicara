@@ -20,10 +20,6 @@ pub struct NormalizedUsage {
 }
 
 impl NormalizedUsage {
-    pub fn unavailable() -> Self {
-        Self::default()
-    }
-
     pub fn has_usage(&self) -> bool {
         self.input_tokens > 0
             || self.output_tokens > 0
@@ -81,13 +77,17 @@ pub struct RecordLlmUsageInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeCliUsageRecordInput {
+pub struct CliUsageRecordInput {
     pub project_id: Option<String>,
     pub task_id: Option<String>,
     pub sprint_id: Option<String>,
     pub source_kind: String,
     pub cli_type: String,
     pub model: String,
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
     pub request_started_at: i64,
     pub request_completed_at: i64,
     pub success: bool,
@@ -555,11 +555,7 @@ pub async fn record_llm_usage(
 }
 
 /// CLI（Claude / Gemini / Codex）の使用量を記録する汎用関数。
-/// 旧名 `record_claude_cli_usage` から改名。
-pub async fn record_cli_usage(
-    app: &AppHandle,
-    input: ClaudeCliUsageRecordInput,
-) -> Result<(), String> {
+pub async fn record_cli_usage(app: &AppHandle, input: CliUsageRecordInput) -> Result<(), String> {
     let resolved_project_id = if let Some(project_id) = input.project_id.clone() {
         Some(project_id)
     } else if let Some(task_id) = input.task_id.as_deref() {
@@ -580,6 +576,35 @@ pub async fn record_cli_usage(
     };
 
     let transport_kind = normalize_cli_transport_kind(&input.cli_type, &input.model).to_string();
+    let usage = NormalizedUsage {
+        input_tokens: input.prompt_tokens.unwrap_or(0),
+        output_tokens: input.completion_tokens.unwrap_or(0),
+        total_tokens: input.total_tokens.unwrap_or(0),
+        cached_input_tokens: input.cached_input_tokens.unwrap_or(0),
+    };
+    let measurement_status = if input.prompt_tokens.is_some()
+        || input.completion_tokens.is_some()
+        || input.total_tokens.is_some()
+        || input.cached_input_tokens.is_some()
+    {
+        MEASUREMENT_CAPTURED
+    } else {
+        MEASUREMENT_UNAVAILABLE
+    };
+    let raw_usage_json = if measurement_status == MEASUREMENT_CAPTURED {
+        json!({
+            "measurement_status": measurement_status,
+            "prompt_tokens": input.prompt_tokens,
+            "completion_tokens": input.completion_tokens,
+            "total_tokens": input.total_tokens,
+            "cached_input_tokens": input.cached_input_tokens,
+        })
+    } else {
+        json!({
+            "measurement_status": measurement_status,
+            "reason": "CLI usage is not machine-readable in the current integration"
+        })
+    };
 
     record_llm_usage(
         app,
@@ -591,16 +616,13 @@ pub async fn record_cli_usage(
             transport_kind: transport_kind.clone(),
             provider: transport_kind,
             model: input.model,
-            usage: NormalizedUsage::unavailable(),
-            measurement_status: Some(MEASUREMENT_UNAVAILABLE.to_string()),
+            usage,
+            measurement_status: Some(measurement_status.to_string()),
             request_started_at: Some(input.request_started_at),
             request_completed_at: Some(input.request_completed_at),
             success: input.success,
             error_message: input.error_message,
-            raw_usage_json: Some(json!({
-                "measurement_status": MEASUREMENT_UNAVAILABLE,
-                "reason": "CLI usage is not machine-readable in the current integration"
-            })),
+            raw_usage_json: Some(raw_usage_json),
         },
     )
     .await?;

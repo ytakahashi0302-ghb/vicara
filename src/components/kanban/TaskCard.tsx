@@ -26,6 +26,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
+import { Textarea } from '../ui/Textarea';
 import { Avatar } from '../ai/Avatar';
 import { resolveAvatarForRoleName } from '../ai/avatarRegistry';
 import { useProjectLabels } from '../../hooks/useProjectLabels';
@@ -169,6 +170,20 @@ function resolveCliDisplayName(cliType: string | null | undefined): string {
     }
 }
 
+function buildPreviewFeedbackContext(feedback: string): string {
+    return [
+        'プレビューで実際に動作確認した結果、期待どおりではない点があります。以下のレビュー指摘を最優先で解消してください。',
+        '',
+        '# プレビュー確認で見つかった差分',
+        feedback.trim(),
+        '',
+        '# 対応時の注意',
+        '- 指摘された期待との差分を埋めること。',
+        '- 関係のない UI や仕様は不用意に変えないこと。',
+        '- 修正後にこの指摘が解消されたかを自己確認し、最終報告に含めること。',
+    ].join('\n');
+}
+
 export const TaskCard = memo(function TaskCard({ task, availableTasks = [], roleLookup }: TaskCardProps) {
     const {
         updateTaskStatus,
@@ -192,6 +207,10 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
     const [isMerging, setIsMerging] = useState(false);
     const [isRerunning, setIsRerunning] = useState(false);
     const [isDiscarding, setIsDiscarding] = useState(false);
+    const [isPreviewFeedbackModalOpen, setIsPreviewFeedbackModalOpen] = useState(false);
+    const [previewFeedback, setPreviewFeedback] = useState('');
+    const [previewFeedbackError, setPreviewFeedbackError] = useState<string | undefined>();
+    const [isPreviewFeedbackSubmitting, setIsPreviewFeedbackSubmitting] = useState(false);
 
     const blocked = isTaskBlocked(task.id);
     const blockers = getTaskBlockers(task.id);
@@ -271,6 +290,9 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
             setHasConflict(false);
             setConflictFiles([]);
             setIsConflictModalOpen(false);
+            setIsPreviewFeedbackModalOpen(false);
+            setPreviewFeedback('');
+            setPreviewFeedbackError(undefined);
             return;
         }
 
@@ -314,7 +336,7 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
         transition,
     };
 
-    const handleLaunchClaude = useCallback(
+    const handleLaunchAgent = useCallback(
         async (e: React.MouseEvent) => {
             e.stopPropagation();
             if (isLaunchDisabled) return;
@@ -328,7 +350,7 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
             }
 
             try {
-                await invoke('execute_claude_task', {
+                await invoke('execute_agent_task', {
                     taskId: task.id,
                     cwd: projectPath,
                 });
@@ -344,7 +366,7 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
                 const errorMessage = String(err);
                 toast.error(`${assignedCliDisplayName} の起動に失敗しました: ${errorMessage}`);
                 window.dispatchEvent(
-                    new CustomEvent('claude_error', {
+                    new CustomEvent('agent_error', {
                         detail: {
                             taskId: task.id,
                             taskTitle: task.title,
@@ -436,6 +458,62 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
         }
     }, [previewInfo]);
 
+    const closePreviewFeedbackModal = useCallback(() => {
+        setIsPreviewFeedbackModalOpen(false);
+        setPreviewFeedback('');
+        setPreviewFeedbackError(undefined);
+    }, []);
+
+    const handleRerunWithPreviewFeedback = useCallback(async () => {
+        if (!projectPath) {
+            toast.error('ローカルパスが未設定のため AI 再実行ができません。');
+            return;
+        }
+        if (!assignedRoleId) {
+            toast.error('AI 実行前に担当ロールを設定してください。');
+            return;
+        }
+
+        const normalizedFeedback = previewFeedback.trim();
+        if (!normalizedFeedback) {
+            setPreviewFeedbackError('期待との差分や直したい点を入力してください。');
+            return;
+        }
+
+        setPreviewFeedbackError(undefined);
+        setIsPreviewFeedbackSubmitting(true);
+        try {
+            await invoke('execute_agent_task', {
+                taskId: task.id,
+                cwd: projectPath,
+                additionalContext: buildPreviewFeedbackContext(normalizedFeedback),
+            });
+            try {
+                await ensureTimerRunning('AI_TASK_LAUNCHED', task.sprint_id ?? null);
+            } catch (timerError) {
+                console.error('Failed to auto-start sprint timer after preview feedback rerun', timerError);
+                toast.error('AI は再実行しましたが、タイマーの自動開始に失敗しました。必要に応じて手動で開始してください。');
+            }
+            await updateTaskStatus(task.id, 'In Progress');
+            closePreviewFeedbackModal();
+            toast.success('プレビューの差分コメントを添えて AI を再実行しました。');
+        } catch (error) {
+            console.error('Failed to rerun agent task with preview feedback', error);
+            toast.error(`AI 再実行に失敗しました: ${error}`);
+        } finally {
+            setIsPreviewFeedbackSubmitting(false);
+        }
+    }, [
+        assignedRoleId,
+        closePreviewFeedbackModal,
+        ensureTimerRunning,
+        previewFeedback,
+        projectPath,
+        task.id,
+        task.sprint_id,
+        updateTaskStatus,
+    ]);
+
     const handleMerge = useCallback(async () => {
         if (!projectPath) {
             toast.error('ローカルパスが未設定のためマージできません。');
@@ -492,7 +570,7 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
             return;
         }
         if (!assignedRoleId) {
-            toast.error('Claude 実行前に担当ロールを設定してください。');
+            toast.error('AI 実行前に担当ロールを設定してください。');
             return;
         }
 
@@ -505,7 +583,7 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
                       )}。既存の変更を尊重しつつ、競合を解消できるように実装・調整してください。`
                     : '前回のマージで競合が発生しました。既存の変更を尊重しつつ、競合を解消できるように実装・調整してください。';
 
-            await invoke('execute_claude_task', {
+            await invoke('execute_agent_task', {
                 taskId: task.id,
                 cwd: projectPath,
                 additionalContext,
@@ -521,7 +599,7 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
             setIsConflictModalOpen(false);
             toast.success('競合情報を添えて AI を再実行しました。');
         } catch (error) {
-            console.error('Failed to rerun claude task', error);
+            console.error('Failed to rerun agent task', error);
             toast.error(`AI 再実行に失敗しました: ${error}`);
         } finally {
             setIsRerunning(false);
@@ -794,12 +872,33 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
                                 承認してマージ
                             </Button>
                         </div>
+
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            disabled={
+                                isPreviewLoading ||
+                                isMerging ||
+                                isPreviewFeedbackSubmitting ||
+                                !projectPath ||
+                                !assignedRoleId
+                            }
+                            onClick={() => setIsPreviewFeedbackModalOpen(true)}
+                        >
+                            {isPreviewFeedbackSubmitting ? (
+                                <Loader2 size={14} className="mr-1 animate-spin" />
+                            ) : (
+                                <RotateCcw size={14} className="mr-1" />
+                            )}
+                            コメントを付けて再開発
+                        </Button>
                     </div>
                 )}
 
                 <div className="absolute right-2 top-2 z-10 flex gap-1 rounded bg-white/80 p-0.5 opacity-100 shadow-sm backdrop-blur-sm transition-all sm:opacity-0 sm:group-hover:opacity-100">
                     <button
-                        onClick={handleLaunchClaude}
+                                        onClick={handleLaunchAgent}
                         onPointerDown={stopInteractiveEvent}
                         disabled={isLaunchDisabled}
                         className="rounded p-1 text-blue-500 transition-colors hover:bg-blue-500 hover:text-white disabled:cursor-not-allowed disabled:text-gray-300 disabled:hover:bg-transparent disabled:hover:text-gray-300"
@@ -837,6 +936,64 @@ export const TaskCard = memo(function TaskCard({ task, availableTasks = [], role
                 title="タスクを編集"
                 availableTasks={availableTasks.filter((availableTask) => availableTask.id !== task.id)}
             />
+
+            <Modal
+                isOpen={isPreviewFeedbackModalOpen}
+                onClose={closePreviewFeedbackModal}
+                title="プレビュー差分を伝えて再開発"
+                width="lg"
+            >
+                <div className="space-y-4">
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                        Preview で確認して期待と違った点を Dev エージェントへ渡します。ファイル名ではなく、
+                        「何を期待したか」「実際にどうだったか」を書くと修正意図が伝わりやすくなります。
+                    </div>
+
+                    <Textarea
+                        label="期待との差分・直したい点"
+                        value={previewFeedback}
+                        onChange={(event) => {
+                            setPreviewFeedback(event.target.value);
+                            if (previewFeedbackError) {
+                                setPreviewFeedbackError(undefined);
+                            }
+                        }}
+                        error={previewFeedbackError}
+                        rows={8}
+                        placeholder={
+                            '例:\n- 保存後に一覧へ戻ることを期待したが、そのままフォームに残る\n- エラーメッセージは画面上部ではなく入力欄の近くに表示してほしい\n- モバイル幅だとボタンが2段目にはみ出す'
+                        }
+                    />
+
+                    <p className="text-xs text-gray-500">
+                        入力した内容は追加コンテキストとして Dev エージェントに渡され、再開発の優先修正事項として扱われます。
+                    </p>
+
+                    <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={closePreviewFeedbackModal}
+                            disabled={isPreviewFeedbackSubmitting}
+                        >
+                            キャンセル
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="primary"
+                            onClick={() => void handleRerunWithPreviewFeedback()}
+                            disabled={isPreviewFeedbackSubmitting}
+                        >
+                            {isPreviewFeedbackSubmitting ? (
+                                <Loader2 size={15} className="mr-2 animate-spin" />
+                            ) : (
+                                <RotateCcw size={15} className="mr-2" />
+                            )}
+                            コメントを付けて再開発する
+                        </Button>
+                    </div>
+                </div>
+            </Modal>
 
             <Modal
                 isOpen={isConflictModalOpen}

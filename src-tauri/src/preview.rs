@@ -110,7 +110,83 @@ impl Drop for PreviewState {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn is_process_running(pid: u32) -> Result<bool, String> {
+    let script = format!(
+        "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($null -eq $p) {{ exit 1 }} else {{ exit 0 }}",
+        pid
+    );
+    let status = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .status()
+        .map_err(|e| format!("preview プロセス状態確認に失敗しました: {}", e))?;
+    Ok(status.success())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_process_running(pid: u32) -> Result<bool, String> {
+    let status = Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map_err(|e| format!("preview プロセス状態確認に失敗しました: {}", e))?;
+    Ok(status.success())
+}
+
+#[cfg(target_os = "windows")]
+fn stop_process_tree_by_pid(pid: u32) -> Result<bool, String> {
+    if !is_process_running(pid)? {
+        return Ok(false);
+    }
+
+    let output = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output()
+        .map_err(|e| format!("preview プロセスツリー停止に失敗しました: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "taskkill が失敗しました。".to_string()
+        };
+        return Err(format!(
+            "preview プロセスツリー停止に失敗しました: {}",
+            detail
+        ));
+    }
+
+    Ok(true)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn stop_process_tree_by_pid(pid: u32) -> Result<bool, String> {
+    if !is_process_running(pid)? {
+        return Ok(false);
+    }
+
+    let status = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .map_err(|e| format!("preview プロセス停止に失敗しました: {}", e))?;
+    if !status.success() {
+        return Err(format!(
+            "preview プロセス停止に失敗しました: kill -TERM {}",
+            pid
+        ));
+    }
+
+    Ok(true)
+}
+
 fn stop_child_process(child: &mut Child) -> Result<(), String> {
+    if stop_process_tree_by_pid(child.id())? {
+        let _ = child.wait();
+        return Ok(());
+    }
+
     match child.try_wait().map_err(|e| e.to_string())? {
         Some(_) => Ok(()),
         None => {
@@ -123,7 +199,23 @@ fn stop_child_process(child: &mut Child) -> Result<(), String> {
     }
 }
 
-fn normalize_preview_command(command: Option<String>) -> String {
+pub fn stop_server_or_fallback_pid(
+    preview_state: &PreviewState,
+    task_id: &str,
+    fallback_pid: Option<u32>,
+) -> Result<bool, String> {
+    if preview_state.stop_server(task_id)?.is_some() {
+        return Ok(true);
+    }
+
+    if let Some(pid) = fallback_pid {
+        return stop_process_tree_by_pid(pid);
+    }
+
+    Ok(false)
+}
+
+pub(crate) fn normalize_preview_command(command: Option<String>) -> String {
     command
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -163,7 +255,11 @@ fn extract_url_from_line(line: &str, re: &Regex) -> Option<(String, u16)> {
         let port: u16 = caps.get(3)?.as_str().parse().ok()?;
 
         // Local を Network より強く優先（同一起動でどちらも出るため）
-        let label_priority: u8 = if label.eq_ignore_ascii_case("Local") { 0 } else { 10 };
+        let label_priority: u8 = if label.eq_ignore_ascii_case("Local") {
+            0
+        } else {
+            10
+        };
         let host_priority: u8 = match host {
             "127.0.0.1" => 0,
             "localhost" => 1,
@@ -234,11 +330,8 @@ fn spawn_preview_process(worktree_path: &Path, command: &str) -> Result<Child, S
 /// ストリーム (stdout/stderr) を行単位で読み、URL を検出したら
 /// mpsc 経由で最初の 1 件を通知する。通知後もストリームは読み続けて
 /// パイプバッファが埋まって子プロセスがブロックするのを防ぐ。
-fn spawn_stream_reader<R>(
-    reader: R,
-    stream_name: &'static str,
-    sender: mpsc::Sender<(String, u16)>,
-) where
+fn spawn_stream_reader<R>(reader: R, stream_name: &'static str, sender: mpsc::Sender<(String, u16)>)
+where
     R: std::io::Read + Send + 'static,
 {
     thread::spawn(move || {
@@ -261,10 +354,7 @@ fn spawn_stream_reader<R>(
                         port,
                         stream_name
                     );
-                    eprintln!(
-                        "[vicara::preview] URL extracted: {} (port {})",
-                        url, port
-                    );
+                    eprintln!("[vicara::preview] URL extracted: {} (port {})", url, port);
                     if sender.send((url, port)).is_ok() {
                         notified = true;
                     }
@@ -419,6 +509,14 @@ mod tests {
     }
 
     #[test]
+    fn stop_server_or_fallback_pid_returns_false_without_targets() {
+        let state = PreviewState::new();
+        let stopped =
+            stop_server_or_fallback_pid(&state, "missing-task", None).expect("should not fail");
+        assert!(!stopped);
+    }
+
+    #[test]
     fn extract_url_picks_loopback_when_present() {
         let re = url_regex();
         let line = "  ➜  Local:   http://127.0.0.1:5173/";
@@ -458,7 +556,8 @@ mod tests {
     fn extract_url_handles_ansi_color_codes() {
         let re = url_regex();
         // Vite は ANSI 色コードを混ぜて出力する
-        let line = "  \x1B[32m➜\x1B[39m  \x1B[1mLocal\x1B[22m:   \x1B[36mhttp://127.0.0.1:5173/\x1B[39m";
+        let line =
+            "  \x1B[32m➜\x1B[39m  \x1B[1mLocal\x1B[22m:   \x1B[36mhttp://127.0.0.1:5173/\x1B[39m";
         let (url, port) = extract_url_from_line(line, &re).expect("URL should be extracted");
         assert_eq!(url, "http://127.0.0.1:5173");
         assert_eq!(port, 5173);

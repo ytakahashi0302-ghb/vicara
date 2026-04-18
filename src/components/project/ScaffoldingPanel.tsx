@@ -153,14 +153,14 @@ export function ScaffoldingPanel({ localPath, projectName }: ScaffoldingPanelPro
                 }
             });
 
-            // CLI ベース AI スキャフォールド用（既存の claude_cli_* イベント名を再利用）
-            await register<{ task_id: string; output: string }>('claude_cli_output', (event) => {
+            // CLI ベース AI スキャフォールド用（共通の agent_cli_* イベントを利用）
+            await register<{ task_id: string; output: string }>('agent_cli_output', (event) => {
                 if (event.payload.task_id.startsWith('scaffold-ai-')) {
                     setOutput((prev) => [...prev, event.payload.output]);
                 }
             });
 
-            await register<{ task_id: string; success: boolean; reason: string }>('claude_cli_exit', (event) => {
+            await register<{ task_id: string; success: boolean; reason: string }>('agent_cli_exit', (event) => {
                 if (event.payload.task_id.startsWith('scaffold-ai-')) {
                     if (event.payload.success) {
                         void handlePostScaffold();

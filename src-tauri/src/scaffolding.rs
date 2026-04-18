@@ -2,7 +2,10 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
 
-use crate::pty_manager::PtyManager;
+use crate::{
+    node_dependencies::{install_node_dependencies, NodeInstallOutputTarget},
+    pty_manager::PtyManager,
+};
 
 // ---------------------------------------------------------------------------
 // 型定義
@@ -201,6 +204,19 @@ fn strip_json_code_fence(content: &str) -> String {
         body.pop();
     }
     body.join("\n").trim().to_string()
+}
+
+async fn install_scaffold_node_dependencies(
+    app_handle: &AppHandle,
+    project_root: &Path,
+) -> Result<Vec<String>, String> {
+    install_node_dependencies(
+        app_handle,
+        project_root,
+        NodeInstallOutputTarget::Scaffold,
+        "Scaffolding 後",
+    )
+    .await
 }
 
 fn parse_api_scaffold_plan(content: &str) -> Result<ApiScaffoldPlan, String> {
@@ -778,7 +794,13 @@ async fn execute_api_scaffold_generation(
     record_scaffold_provider_usage(app_handle, project_id, &response).await;
 
     let plan = parse_api_scaffold_plan(&response.content)?;
-    apply_api_scaffold_plan(app_handle, Path::new(local_path), plan)
+    let summary = apply_api_scaffold_plan(app_handle, Path::new(local_path), plan)?;
+    let installed = install_scaffold_node_dependencies(app_handle, Path::new(local_path)).await?;
+    if installed.is_empty() {
+        Ok(summary)
+    } else {
+        Ok(format!("{} / 依存導入: {}", summary, installed.join(", ")))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -983,6 +1005,20 @@ pub async fn execute_scaffold_cli(
                     }
                 }
             }
+            if success {
+                match install_scaffold_node_dependencies(&app_handle, p).await {
+                    Ok(installed_dirs) => {
+                        if !installed_dirs.is_empty() {
+                            reason =
+                                format!("{} / 依存導入: {}", reason, installed_dirs.join(", "));
+                        }
+                    }
+                    Err(error) => {
+                        success = false;
+                        reason = error;
+                    }
+                }
+            }
             let _ = app_handle.emit("scaffold_exit", ScaffoldExitPayload { success, reason });
             Ok(success)
         }
@@ -1006,12 +1042,12 @@ pub async fn execute_scaffold_cli(
 }
 
 /// PO アシスタント設定に追従して AI にディレクトリ構造を生成させる。
-/// CLI transport は claude_runner と同じイベント（claude_cli_output / claude_cli_exit）を流し、
+/// CLI transport は agent_runner と同じイベント（agent_cli_output / agent_cli_exit）を流し、
 /// API transport は scaffold_output / scaffold_exit を流す。
 #[tauri::command]
 pub async fn execute_scaffold_ai(
     app_handle: AppHandle,
-    state: tauri::State<'_, crate::claude_runner::AgentState>,
+    state: tauri::State<'_, crate::agent_runner::AgentState>,
     local_path: String,
     tech_stack_info: String,
 ) -> Result<(), String> {
@@ -1031,7 +1067,7 @@ pub async fn execute_scaffold_ai(
             model,
             cwd,
         } => {
-            crate::claude_runner::execute_cli_prompt_task(
+            crate::agent_runner::execute_cli_prompt_task(
                 app_handle,
                 state,
                 task_id,

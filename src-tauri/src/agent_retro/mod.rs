@@ -1,7 +1,10 @@
+mod claude_stream;
+
 use crate::{cli_runner::CliType, db};
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use tauri::AppHandle;
+
+use claude_stream::ClaudeStreamJsonParser;
 
 const REASONING_LOG_CHAR_LIMIT: usize = 32_768;
 const FINAL_ANSWER_CHAR_LIMIT: usize = 16_384;
@@ -40,9 +43,33 @@ pub struct AgentRetroPersistInput {
 }
 
 #[derive(Debug, Clone)]
+enum AgentRetroParser {
+    PlainText { mirror_to_final_answer: bool },
+    ClaudeStreamJson(ClaudeStreamJsonParser),
+}
+
+enum CaptureMutation {
+    AppendReasoning(String),
+    AppendFallbackAnswer(String),
+    SetFinalAnswer(String),
+    UpsertToolEvent {
+        tool_name: String,
+        status: String,
+        summary: String,
+        tool_use_id: Option<String>,
+    },
+    MergeLastToolSummary(String),
+    ResolveToolResult {
+        tool_use_id: String,
+        is_error: bool,
+        result_summary: String,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct AgentRetroCapture {
-    cli_type: CliType,
-    line_buffer: String,
+    parser: AgentRetroParser,
+    fallback_reasoning_as_answer: bool,
     reasoning_log: String,
     final_answer_fallback: String,
     final_answer: String,
@@ -53,9 +80,28 @@ pub struct AgentRetroCapture {
 
 impl AgentRetroCapture {
     pub fn new(cli_type: CliType) -> Self {
+        let (parser, fallback_reasoning_as_answer) = match cli_type {
+            CliType::Claude => (
+                AgentRetroParser::ClaudeStreamJson(ClaudeStreamJsonParser::default()),
+                false,
+            ),
+            CliType::Gemini => (
+                AgentRetroParser::PlainText {
+                    mirror_to_final_answer: true,
+                },
+                true,
+            ),
+            CliType::Codex => (
+                AgentRetroParser::PlainText {
+                    mirror_to_final_answer: false,
+                },
+                false,
+            ),
+        };
+
         Self {
-            cli_type,
-            line_buffer: String::new(),
+            parser,
+            fallback_reasoning_as_answer,
             reasoning_log: String::new(),
             final_answer_fallback: String::new(),
             final_answer: String::new(),
@@ -66,21 +112,28 @@ impl AgentRetroCapture {
     }
 
     pub fn ingest_chunk(&mut self, output: &str) {
-        match self.cli_type {
-            CliType::Claude => self.ingest_claude_stream_json(output),
-            CliType::Gemini => self.ingest_plain_text(output, true),
-            CliType::Codex => self.ingest_plain_text(output, false),
+        if let AgentRetroParser::PlainText {
+            mirror_to_final_answer,
+        } = &self.parser
+        {
+            self.ingest_plain_text(output, *mirror_to_final_answer);
+            return;
         }
+
+        let mutations = match &mut self.parser {
+            AgentRetroParser::ClaudeStreamJson(parser) => parser.ingest_chunk(output),
+            AgentRetroParser::PlainText { .. } => Vec::new(),
+        };
+        self.apply_mutations(mutations);
     }
 
     pub fn finalize(
         &mut self,
         final_answer_override: Option<String>,
     ) -> FinalizedAgentRetroCapture {
-        if matches!(self.cli_type, CliType::Claude) && !self.line_buffer.trim().is_empty() {
-            let remaining = self.line_buffer.clone();
-            self.line_buffer.clear();
-            self.handle_claude_line(&remaining);
+        if let AgentRetroParser::ClaudeStreamJson(parser) = &mut self.parser {
+            let pending = parser.finish();
+            self.apply_mutations(pending);
         }
 
         let final_answer = final_answer_override
@@ -88,7 +141,7 @@ impl AgentRetroCapture {
             .or_else(|| normalize_text(&self.final_answer))
             .or_else(|| normalize_text(&self.final_answer_fallback))
             .or_else(|| {
-                if matches!(self.cli_type, CliType::Gemini) {
+                if self.fallback_reasoning_as_answer {
                     normalize_text(&self.reasoning_log)
                 } else {
                     None
@@ -119,184 +172,56 @@ impl AgentRetroCapture {
         }
     }
 
-    fn ingest_claude_stream_json(&mut self, output: &str) {
-        self.line_buffer.push_str(&output.replace("\r\n", "\n"));
-
-        while let Some(newline_index) = self.line_buffer.find('\n') {
-            let line = self.line_buffer[..newline_index].to_string();
-            self.line_buffer.drain(..=newline_index);
-            self.handle_claude_line(&line);
-        }
-    }
-
-    fn handle_claude_line(&mut self, line: &str) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-
-        let Ok(root) = serde_json::from_str::<JsonValue>(trimmed) else {
-            self.ingest_plain_text(line, false);
-            append_with_limit(&mut self.reasoning_log, "\n", REASONING_LOG_CHAR_LIMIT);
-            return;
-        };
-
-        match root.get("type").and_then(JsonValue::as_str) {
-            Some("stream_event") => self.handle_claude_stream_event(&root),
-            Some("assistant") => self.handle_claude_assistant_message(&root),
-            Some("user") => self.handle_claude_user_message(&root),
-            _ => {}
-        }
-    }
-
-    fn handle_claude_stream_event(&mut self, root: &JsonValue) {
-        let Some(event) = root.get("event") else {
-            return;
-        };
-
-        match event.get("type").and_then(JsonValue::as_str) {
-            Some("content_block_start") => {
-                let Some(content_block) = event.get("content_block") else {
-                    return;
-                };
-                if content_block.get("type").and_then(JsonValue::as_str) != Some("tool_use") {
-                    return;
+    fn apply_mutations(&mut self, mutations: Vec<CaptureMutation>) {
+        for mutation in mutations {
+            match mutation {
+                CaptureMutation::AppendReasoning(text) => {
+                    append_with_limit(&mut self.reasoning_log, &text, REASONING_LOG_CHAR_LIMIT);
                 }
-
-                let tool_name = content_block
-                    .get("name")
-                    .and_then(JsonValue::as_str)
-                    .unwrap_or("tool")
-                    .to_string();
-                let summary = summarize_json_value(content_block.get("input"));
-                let tool_id = content_block
-                    .get("id")
-                    .and_then(JsonValue::as_str)
-                    .map(str::to_string);
-                self.push_tool_event(tool_name, "requested".to_string(), summary, tool_id);
-            }
-            Some("content_block_delta") => {
-                let Some(delta) = event.get("delta") else {
-                    return;
-                };
-                match delta.get("type").and_then(JsonValue::as_str) {
-                    Some("thinking_delta") => {
-                        if let Some(thinking) = delta.get("thinking").and_then(JsonValue::as_str) {
-                            append_with_limit(
-                                &mut self.reasoning_log,
-                                thinking,
-                                REASONING_LOG_CHAR_LIMIT,
-                            );
+                CaptureMutation::AppendFallbackAnswer(text) => {
+                    append_with_limit(
+                        &mut self.final_answer_fallback,
+                        &text,
+                        FINAL_ANSWER_CHAR_LIMIT,
+                    );
+                }
+                CaptureMutation::SetFinalAnswer(text) => {
+                    self.final_answer = truncate_chars(text.trim(), FINAL_ANSWER_CHAR_LIMIT);
+                }
+                CaptureMutation::UpsertToolEvent {
+                    tool_name,
+                    status,
+                    summary,
+                    tool_use_id,
+                } => self.push_tool_event(tool_name, status, summary, tool_use_id),
+                CaptureMutation::MergeLastToolSummary(summary) => {
+                    if let Some(index) = self.tool_events.len().checked_sub(1) {
+                        if !summary.is_empty() {
+                            self.tool_events[index].summary =
+                                merge_tool_summaries(&self.tool_events[index].summary, &summary);
                         }
                     }
-                    Some("text_delta") => {
-                        if let Some(text) = delta.get("text").and_then(JsonValue::as_str) {
-                            append_with_limit(
-                                &mut self.final_answer_fallback,
-                                text,
-                                FINAL_ANSWER_CHAR_LIMIT,
-                            );
-                        }
-                    }
-                    Some("input_json_delta") => {
-                        let partial_json = delta
-                            .get("partial_json")
-                            .and_then(JsonValue::as_str)
-                            .unwrap_or("");
-                        if partial_json.is_empty() {
-                            return;
-                        }
-
-                        let summary = truncate_chars(partial_json.trim(), TOOL_SUMMARY_CHAR_LIMIT);
-                        if let Some(index) = self.tool_events.len().checked_sub(1) {
-                            if !summary.is_empty() {
-                                self.tool_events[index].summary = merge_tool_summaries(
-                                    &self.tool_events[index].summary,
-                                    &summary,
-                                );
-                            }
-                        }
-                    }
-                    _ => {}
                 }
-            }
-            _ => {}
-        }
-    }
+                CaptureMutation::ResolveToolResult {
+                    tool_use_id,
+                    is_error,
+                    result_summary,
+                } => {
+                    let Some(index) = self.tool_event_lookup.get(&tool_use_id).copied() else {
+                        continue;
+                    };
 
-    fn handle_claude_assistant_message(&mut self, root: &JsonValue) {
-        let Some(message) = root.get("message") else {
-            return;
-        };
-        let Some(content) = message.get("content").and_then(JsonValue::as_array) else {
-            return;
-        };
+                    self.tool_events[index].status = if is_error {
+                        "failed".to_string()
+                    } else {
+                        "completed".to_string()
+                    };
 
-        let mut answer = String::new();
-        for block in content {
-            match block.get("type").and_then(JsonValue::as_str) {
-                Some("text") => {
-                    if let Some(text) = block.get("text").and_then(JsonValue::as_str) {
-                        answer.push_str(text);
+                    if !result_summary.is_empty() {
+                        self.tool_events[index].summary =
+                            merge_tool_summaries(&self.tool_events[index].summary, &result_summary);
                     }
                 }
-                Some("tool_use") => {
-                    let tool_name = block
-                        .get("name")
-                        .and_then(JsonValue::as_str)
-                        .unwrap_or("tool")
-                        .to_string();
-                    let summary = summarize_json_value(block.get("input"));
-                    let tool_id = block
-                        .get("id")
-                        .and_then(JsonValue::as_str)
-                        .map(str::to_string);
-                    self.push_tool_event(tool_name, "requested".to_string(), summary, tool_id);
-                }
-                _ => {}
-            }
-        }
-
-        if !answer.trim().is_empty() {
-            self.final_answer = truncate_chars(answer.trim(), FINAL_ANSWER_CHAR_LIMIT);
-        }
-    }
-
-    fn handle_claude_user_message(&mut self, root: &JsonValue) {
-        let Some(message) = root.get("message") else {
-            return;
-        };
-        let Some(content) = message.get("content").and_then(JsonValue::as_array) else {
-            return;
-        };
-
-        for block in content {
-            if block.get("type").and_then(JsonValue::as_str) != Some("tool_result") {
-                continue;
-            }
-
-            let Some(tool_use_id) = block.get("tool_use_id").and_then(JsonValue::as_str) else {
-                continue;
-            };
-            let Some(index) = self.tool_event_lookup.get(tool_use_id).copied() else {
-                continue;
-            };
-
-            self.tool_events[index].status =
-                if block.get("is_error").and_then(JsonValue::as_bool) == Some(true) {
-                    "failed".to_string()
-                } else {
-                    "completed".to_string()
-                };
-
-            let result_summary = block
-                .get("content")
-                .and_then(JsonValue::as_str)
-                .map(|text| truncate_chars(text.trim(), TOOL_SUMMARY_CHAR_LIMIT))
-                .unwrap_or_default();
-            if !result_summary.is_empty() {
-                self.tool_events[index].summary =
-                    merge_tool_summaries(&self.tool_events[index].summary, &result_summary);
             }
         }
     }
@@ -430,20 +355,20 @@ fn append_with_limit(target: &mut String, fragment: &str, limit: usize) {
     target.push_str(&truncate_chars(fragment, remaining));
 }
 
-fn truncate_chars(value: &str, limit: usize) -> String {
+pub(super) fn truncate_chars(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
-fn summarize_json_value(value: Option<&JsonValue>) -> String {
+pub(super) fn summarize_json_value(value: Option<&serde_json::Value>) -> String {
     let Some(value) = value else {
         return String::new();
     };
 
-    let summary = if let Some(command) = value.get("command").and_then(JsonValue::as_str) {
+    let summary = if let Some(command) = value.get("command").and_then(serde_json::Value::as_str) {
         format!("command: {}", command)
-    } else if let Some(path) = value.get("file_path").and_then(JsonValue::as_str) {
+    } else if let Some(path) = value.get("file_path").and_then(serde_json::Value::as_str) {
         format!("file: {}", path)
-    } else if let Some(pattern) = value.get("pattern").and_then(JsonValue::as_str) {
+    } else if let Some(pattern) = value.get("pattern").and_then(serde_json::Value::as_str) {
         format!("pattern: {}", pattern)
     } else if let Some(text) = value.as_str() {
         text.to_string()

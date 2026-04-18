@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn create_runner_returns_claude_runner() {
+    fn create_runner_returns_expected_runner_for_claude() {
         let runner = create_runner(&CliType::Claude).expect("Claude runner should exist");
 
         assert_eq!(runner.cli_type(), CliType::Claude);
