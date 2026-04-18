@@ -23,7 +23,7 @@ The human acts as the **Product Owner** — deciding *what to build* and *in wha
 
 > Start your first step without hesitation, lead multiple AIs as a team, stay in control without being swallowed by a black box, and move forward on the right path.
 
-vicara integrates idea brainstorming, project context organization, sprint planning, role assignment, and implementation execution via Claude Code CLI into a single UI.
+vicara integrates idea brainstorming, project context organization, sprint planning, role assignment, and implementation execution via coding agent CLIs into a single UI.
 
 ![vicara overview](./docs/images/vicara-overview-v2_0_0.png)
 
@@ -62,7 +62,7 @@ vicara integrates idea brainstorming, project context organization, sprint plann
 ### Installation & Launch
 
 ```bash
-git clone https://github.com/your-username/vicara.git
+git clone https://github.com/ytakahashi0302-ghb/vicara.git
 cd vicara
 npm install
 npm run tauri -- dev
@@ -130,10 +130,13 @@ This project is licensed under the [Apache License 2.0](./LICENSE).
 
 ## Release Notes
 
+Latest release:
+- [vicara v2.2.0](./releases/v2.2.0.md)
+
 Looking for localized versions?
 - [🇯🇵 日本語 (Main)](./README.md)
 - [🇺🇸 English (Current)](./README_en.md)
 
 ---
 
-*vicara v2.0.0 — Human-led AI team orchestration for solo builders.*
+*vicara v2.2.0 — Human-led AI team orchestration for solo builders.*
