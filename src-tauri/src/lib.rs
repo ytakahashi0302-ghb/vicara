@@ -284,7 +284,11 @@ pub fn run() {
             worktree::start_preview_server,
             worktree::stop_preview_server,
             worktree::open_preview_in_browser,
-            worktree::open_static_preview
+            worktree::open_static_preview,
+            worktree::start_project_root_preview,
+            worktree::get_project_root_preview,
+            worktree::stop_project_root_preview,
+            worktree::open_project_root_static_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

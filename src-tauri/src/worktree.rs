@@ -61,6 +61,10 @@ fn worktree_path(project_path: &str, task_id: &str) -> PathBuf {
         .join(format!("task-{}", task_id))
 }
 
+fn project_root_preview_key(project_id: &str) -> String {
+    format!("project-root:{}", project_id)
+}
+
 fn branch_name(task_id: &str) -> String {
     format!("feature/task-{}", task_id)
 }
@@ -145,6 +149,15 @@ async fn stop_preview_for_task(
         task_id,
         preview_pid_from_record(record.as_ref()),
     )
+}
+
+fn stop_project_root_preview_for_project(
+    preview_state: &PreviewState,
+    project_id: &str,
+) -> Result<bool, String> {
+    Ok(preview_state
+        .stop_server(&project_root_preview_key(project_id))?
+        .is_some())
 }
 
 async fn resolve_worktree_path_for_task(
@@ -858,6 +871,9 @@ pub async fn merge_worktree(
         &task_id,
         preview_pid_from_record(worktree_record.as_ref()),
     );
+    if let Some(record) = worktree_record.as_ref() {
+        let _ = stop_project_root_preview_for_project(preview_state.inner(), &record.project_id);
+    }
     remove_worktree_node_modules_link(&wt_path);
 
     let _ = git::run_git(
@@ -1043,6 +1059,63 @@ pub async fn start_preview_server(
 }
 
 #[tauri::command]
+pub async fn start_project_root_preview(
+    app_handle: AppHandle,
+    preview_state: State<'_, PreviewState>,
+    project_id: String,
+    project_path: String,
+    command: Option<String>,
+) -> Result<PreviewServerInfo, String> {
+    let project_dir = PathBuf::from(&project_path);
+    if !project_dir.exists() || !project_dir.is_dir() {
+        return Err("プロジェクトルートが存在しないため、動作確認を開始できません。".to_string());
+    }
+
+    let normalized_command = preview::normalize_preview_command(command);
+    if let Some(installed_dirs) = node_dependencies::ensure_preview_dependencies_ready(
+        &app_handle,
+        &project_id,
+        &project_dir,
+        &normalized_command,
+    )
+    .await?
+    {
+        log::info!(
+            "Project root preview dependency self-heal completed for project {}: {}",
+            project_id,
+            if installed_dirs.is_empty() {
+                "(no package directories reported)".to_string()
+            } else {
+                installed_dirs.join(", ")
+            }
+        );
+    }
+
+    preview::start_preview_for_task(
+        &preview_state,
+        &project_root_preview_key(&project_id),
+        &project_dir,
+        Some(normalized_command),
+    )
+}
+
+#[tauri::command]
+pub async fn get_project_root_preview(
+    preview_state: State<'_, PreviewState>,
+    project_id: String,
+) -> Result<Option<PreviewServerInfo>, String> {
+    preview_state.get_info(&project_root_preview_key(&project_id))
+}
+
+#[tauri::command]
+pub async fn stop_project_root_preview(
+    preview_state: State<'_, PreviewState>,
+    project_id: String,
+) -> Result<bool, String> {
+    stop_project_root_preview_for_project(preview_state.inner(), &project_id)
+}
+
+#[tauri::command]
 pub async fn stop_preview_server(
     app_handle: AppHandle,
     preview_state: State<'_, PreviewState>,
@@ -1079,6 +1152,25 @@ pub async fn open_static_preview(
             "ワークツリー内に index.html が見つかりません。静的サイト構成か確認してください。"
                 .to_string(),
         );
+    }
+
+    preview::open_local_path(&app_handle, &index_path)
+        .map_err(|e| format!("index.html を開けませんでした: {}", e))
+}
+
+#[tauri::command]
+pub async fn open_project_root_static_preview(
+    app_handle: AppHandle,
+    project_path: String,
+) -> Result<String, String> {
+    let project_dir = PathBuf::from(&project_path);
+    if !project_dir.exists() || !project_dir.is_dir() {
+        return Err("プロジェクトルートが存在しないため、動作確認を開始できません。".to_string());
+    }
+
+    let index_path = project_dir.join("index.html");
+    if !index_path.exists() {
+        return Err("プロジェクトルートに index.html が見つかりません。静的サイト構成か確認してください。".to_string());
     }
 
     preview::open_local_path(&app_handle, &index_path)
